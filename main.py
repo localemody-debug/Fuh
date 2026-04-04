@@ -164,9 +164,9 @@ def check_cooldown(command: str, user_id: int) -> float:
     return 0
 
 # ─── Bet limits ───────────────────────────────────────────────
-MAX_BET    = 1_000_000   # 10,000 pts ($100)
-MAX_PAYOUT = 10_000_000  # 100,000 pts ($1000)
-MIN_BET    = 1        # 0.01 pts ($0.0001) — 1 hundredth
+MAX_BET    = 75_000_000   # 750,000 pts (750M)
+MAX_PAYOUT = 165_000_000  # 1,650,000 pts (1.65B max payout)
+MIN_BET    = 10_000       # 100 pts (100K min bet)
 
 # ─── Daily reward ─────────────────────────────────────────────
 DAILY_MIN = 1          # 1 pt
@@ -1605,41 +1605,55 @@ async def _auto_create_channels():
         if admin_role: ow[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         return ow
 
-    # ── Create all categories and channels ──
-    cat_info   = await _get_or_create_cat("📢 INFO")
-    await _get_or_create_ch("announcements", cat_info, "Casino announcements", _public_ow())
-    await _get_or_create_ch("rules",         cat_info, "Casino rules",         _public_ow())
-    await _get_or_create_ch("updates",       cat_info, "Bot changelog",        _public_ow())
+    # ── Create all categories and channels — SABFlippy layout ──
 
-    cat_casino = await _get_or_create_cat("🎰 CASINO")
-    games_ch   = await _get_or_create_ch("🎮┃games",       cat_casino, "Use slash commands to play!", _members_ow())
-    await _get_or_create_ch("💰┃daily",      cat_casino, "Claim your daily here!",         _members_ow())
-    await _get_or_create_ch("🎁┃giveaways",  cat_casino, "Giveaways and rain!",             _members_ow())
-    await _get_or_create_ch("🏆┃leaderboard",cat_casino, "Top players",                     _members_ow())
-    vouches_ch = await _get_or_create_ch("vouches",         cat_casino, "Real deposits, withdrawals & wins", _vouches_ow())
+    # RULES (top, public read-only)
+    cat_rules  = await _get_or_create_cat("RULES")
+    await _get_or_create_ch("📋┃rules", cat_rules, "Server rules", _public_ow())
 
-    cat_cb     = await _get_or_create_cat("⚔️ CASE BATTLES")
-    cb_ch      = await _get_or_create_ch("⚔️┃case-battles", cat_cb, "Start and join case battles!", _members_ow())
+    # IMPORTANT
+    cat_imp    = await _get_or_create_cat("❗ IMPORTANT")
+    await _get_or_create_ch("📢┃announcements",     cat_imp, "Casino announcements",       _public_ow())
+    await _get_or_create_ch("📢┃bot-announcements", cat_imp, "Bot update announcements",   _public_ow())
+    await _get_or_create_ch("🎁┃giveaways",         cat_imp, "Giveaways and rain!",        _members_ow())
+    await _get_or_create_ch("✅┃are-we-legit",      cat_imp, "Proof we pay out",           _vouches_ow())
 
-    cat_crypto = await _get_or_create_cat("💳 CRYPTO")
-    await _get_or_create_ch("💳┃deposit",  cat_crypto, "Open a deposit ticket — staff will credit your balance", _members_ow())
-    await _get_or_create_ch("💸┃withdraw", cat_crypto, "Withdraw your points for shop items", _members_ow())
+    # EXTRA
+    cat_extra  = await _get_or_create_cat("Extra")
+    await _get_or_create_ch("🎁┃tips",           cat_extra, "Send tips to others",           _members_ow())
+    await _get_or_create_ch("✨┃rain",            cat_extra, "Coin rain events",              _members_ow())
+    await _get_or_create_ch("🎁┃promo-codes",    cat_extra, "Redeem promo codes here",       _members_ow())
+    await _get_or_create_ch("💜┃boost-rewards",  cat_extra, "Rewards for boosting the server", _members_ow())
+    await _get_or_create_ch("🚨┃withdrawals",    cat_extra, "Withdrawal requests",           _members_ow())
 
+    # CHAT
+    cat_chat   = await _get_or_create_cat("Chat")
+    games_ch   = await _get_or_create_ch("💬┃general",  cat_chat, "General chat",          _members_ow())
+    await _get_or_create_ch("🖼️┃media",                  cat_chat, "Share media here",     _members_ow())
+
+    # VERIFICATION
     cat_verify = await _get_or_create_cat("🔒 VERIFICATION")
     await _get_or_create_ch("✅┃verify", cat_verify, "Verify to access the server", {
         guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
         guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
     })
 
-    cat_logs       = await _get_or_create_cat("📊 LOGS")
-    game_log_ch    = await _get_or_create_ch("📊┃game-log",    cat_logs, "All game results",                _staff_ow())
-    finance_log_ch = await _get_or_create_ch("💰┃finance-log", cat_logs, "Deposits, withdrawals",          _staff_ow())
-    tip_log_ch     = await _get_or_create_ch("💸┃tip-log",     cat_logs, "Tip transactions",               _staff_ow())
-    invite_log_ch  = await _get_or_create_ch("📨┃invite-log",  cat_logs, "Invite reward logs",             _staff_ow())
-    verify_log_ch  = await _get_or_create_ch("✅┃verify-log",  cat_logs, "Verification logs",              _staff_ow())
-
+    # VIP — lounge + room placeholder (user rooms auto-created via /createviproom)
     cat_vip = await _get_or_create_cat("👑 VIP")
-    await _get_or_create_ch("👑┃vip-lounge", cat_vip, "Exclusive VIP lounge", _vip_ow())
+    await _get_or_create_ch("👑┃vip-lounge",  cat_vip, "Exclusive VIP lounge", _vip_ow())
+    await _get_or_create_ch("💎・vip-room",   cat_vip, "Private VIP room — use /createviproom to get your own", _vip_ow())
+
+    # LOGS (staff only)
+    cat_logs       = await _get_or_create_cat("📊 LOGS")
+    game_log_ch    = await _get_or_create_ch("📊┃game-log",    cat_logs, "All game results",           _staff_ow())
+    finance_log_ch = await _get_or_create_ch("💰┃finance-log", cat_logs, "Deposits & withdrawals",    _staff_ow())
+    tip_log_ch     = await _get_or_create_ch("💸┃tip-log",     cat_logs, "Tip transactions",          _staff_ow())
+    invite_log_ch  = await _get_or_create_ch("📨┃invite-log",  cat_logs, "Invite reward logs",        _staff_ow())
+    verify_log_ch  = await _get_or_create_ch("✅┃verify-log",  cat_logs, "Verification logs",         _staff_ow())
+    vouches_ch     = await _get_or_create_ch("✅┃are-we-legit-log", cat_logs, "Public vouch feed",    _staff_ow())
+
+    # Dummy vars for compat (no separate case-battles category in this layout)
+    cb_ch = games_ch
 
     # ── Save channel IDs to DB and globals ──
     global LOG_CHANNEL_ID, FINANCE_LOG_ID, INVITE_LOG_ID, TIP_LOG_ID
@@ -7319,6 +7333,13 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
             await ensure_user(conn, interaction.user)
             deducted = await deduct_balance_safe(conn, interaction.user.id, amt)
             if not deducted:
+
+# ═══════════════════════════════════════════════════════════
+# END OF PART 1 — paste Part 2 directly below this line
+# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# PART 2 — paste this directly below Part 1
+# ═══════════════════════════════════════════════════════════
                 row = await get_user(conn, interaction.user.id)
                 bal = row["balance"] if row else 0
                 await interaction.response.send_message(
@@ -7332,13 +7353,6 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
-# ═══════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════
-# END OF PART 1 — paste Part 2 directly below this line
-# ═══════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════
-# PART 2 — paste this directly below Part 1
 # ═══════════════════════════════════════════════════════════
 # GAME: MINES
 # ═══════════════════════════════════════════════════════════
@@ -12347,9 +12361,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # Balance checked after every game via check_vip_balance()
 # Drop below 75M → warning in channel → 5 min to recover → auto delete
 
-VIP_MIN_BALANCE   = 75_000   # 750 pts             # 750 pts ($7.50) required to create/keep VIP room
+VIP_MIN_BALANCE   = 7_500_000   # 75,000 pts (75M) required to create/keep VIP room
 VIP_WARN_MINUTES  = 5               # minutes before deletion after warning
-VIP_CATEGORY_NAME = "VIP Rooms"     # Discord category name
+VIP_CATEGORY_NAME = "👑 VIP"        # Same category as the VIP lounge — rooms created here too
 
 # Tracks users who have been warned: user_id → asyncio.Task
 _vip_warn_tasks: dict[int, asyncio.Task] = {}
