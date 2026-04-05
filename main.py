@@ -227,6 +227,7 @@ LOGO_URL = os.getenv("LOGO_URL", "")  # Paste your Sabpot logo URL here or set L
 #   3. Right-click the image → "Copy Link"  (ends in .gif or .webp)
 #   4. Paste that URL below (replace the empty string)
 # OR set environment variables: COINFLIP_HEADS_GIF, COINFLIP_TAILS_GIF, COINFLIP_SPINNING_GIF
+# ⚠️ Discord CDN GIF URLs expire! If GIFs stop showing, re-upload them and update these URLs.
 COINFLIP_HEADS_GIF    = os.getenv("COINFLIP_HEADS_GIF",    "https://cdn.discordapp.com/attachments/1485237815812948021/1489587591526350939/GIF_20260403_095631_190.gif?ex=69d0f60d&is=69cfa48d&hm=0c523c0322e93793e85acccfa1845b820bc30cf8be97729841469e6af622408a&")
 COINFLIP_TAILS_GIF    = os.getenv("COINFLIP_TAILS_GIF",    "https://cdn.discordapp.com/attachments/1485237815812948021/1489587538761879654/GIF_20260403_095813_351.gif?ex=69d0f600&is=69cfa480&hm=8a9d1305188123ce6b950b2ec1b2cdc9769db936305df8236b558bd4494eea9a&")
 COINFLIP_SPINNING_GIF = os.getenv("COINFLIP_SPINNING_GIF", "")  # Optional spinning GIF while flipping
@@ -3611,22 +3612,7 @@ class CoinflipView(BaseGameView):
             await interaction.response.defer()
         msg = self._original_message
 
-        # ── Show spinning GIF while flipping ──
-        spinning_embed = discord.Embed(
-            title="🪙  SABPOT COINFLIP",
-            description=f"**{self.creator.display_name}** bets **{format_amount(self.bet)}** on **{self.choice}**\n\n🎲 Flipping the coin...",
-            color=C_GOLD
-        )
-        if COINFLIP_SPINNING_GIF:
-            spinning_embed.set_image(url=COINFLIP_SPINNING_GIF)
-        _brand_embed(spinning_embed)
-        try:
-            await msg.edit(embed=spinning_embed, view=None)
-        except Exception as e:
-            print(f"[ERROR] {type(e).__name__}: {e}")
-        await asyncio.sleep(2.5)
-
-        # ── Determine result ──
+        # ── Determine result first (so animation can show correct GIF) ──
         if self.vs_bot:
             bot_wins    = random.random() < get_dynamic_house_win(self.creator.id)
             result      = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
@@ -3639,6 +3625,40 @@ class CoinflipView(BaseGameView):
         payout = min(self.bet * 2, MAX_PAYOUT) if creator_won else 0
         winner_mention = self.creator.mention if creator_won else opponent_label
 
+        # ── Phase 1: spinning animation with coin GIF ──
+        coin_gif = COINFLIP_HEADS_GIF if result == "Heads" else COINFLIP_TAILS_GIF
+        spin_frames = [
+            "🪙　　　　",
+            "　🪙　　　",
+            "　　🪙　　",
+            "　　　🪙　",
+            "　　　　🪙",
+            "　　　🪙　",
+            "　　🪙　　",
+            "　🪙　　　",
+            "🪙　　　　",
+            "　🪙　　　",
+        ]
+        for i, frame in enumerate(spin_frames):
+            spin_embed = discord.Embed(
+                title="🪙  Coinflip",
+                description=(
+                    f"**Bet:** {format_amount(self.bet)} 💎  ·  **Side:** {self.choice}\n\n"
+                    f"{frame}"
+                ),
+                color=C_GOLD
+            )
+            if coin_gif:
+                spin_embed.set_image(url=coin_gif)
+            _brand_embed(spin_embed)
+            try:
+                await msg.edit(embed=spin_embed, view=None)
+            except Exception as e:
+                print(f"[COINFLIP ANIM] frame error: {e}")
+                break
+            await asyncio.sleep(0.35)
+
+        # ── Phase 2: DB work ──
         try:
             conn = await get_conn()
             try:
@@ -3671,29 +3691,40 @@ class CoinflipView(BaseGameView):
         except Exception as _db_err:
             print(f"[COINFLIP DB ERROR] {_db_err}")
 
-        # ── Show result GIF based on outcome ──
-        _cf_icon = "🟡" if result == "Heads" else "⬛"
-        result_gif = COINFLIP_HEADS_GIF if result == "Heads" else COINFLIP_TAILS_GIF
-        embed = discord.Embed(
-            color=C_WIN if creator_won else C_LOSS,
+        # ── Phase 3: BIG result reveal ──
+        if creator_won:
+            result_icon  = "🏆"
+            result_top   = "# 🏆  YOU WIN  🏆"
+            result_color = C_WIN
+        else:
+            result_icon  = "💀"
+            result_top   = "# 💀  YOU LOSE  💀"
+            result_color = C_LOSS
+
+        coin_icon = "🟡" if result == "Heads" else "⬛"
+        net = payout - self.bet
+
+        result_embed = discord.Embed(
+            color=result_color,
             description=(
-                f"## {_cf_icon}  {result.upper()}\n"
-                f"{result_desc(creator_won, False, self.bet, payout)}"
+                f"{result_top}\n"
+                f"## {coin_icon}  {result.upper()}\n"
+                f"\n"
+                f"**Bet:** {format_amount(self.bet)} 💎\n"
+                f"**{'Won' if creator_won else 'Lost'}:** "
+                f"{'`+' + format_amount(net) + '`' if creator_won else '`-' + format_amount(self.bet) + '`'} 💎\n"
+                f"**Winner:** {winner_mention}"
             )
         )
-        embed.add_field(name="Winner",  value=winner_mention,                inline=True)
-        embed.add_field(name="Round",   value=f"`{self.choice}`",              inline=True)
-        embed.add_field(name="Wager",   value=f"`{format_amount(self.bet)}`", inline=True)
-        embed.set_thumbnail(url=await get_avatar(self.creator))
-        if result_gif:
-            embed.set_image(url=result_gif)
-        _brand_embed(embed)
+        result_embed.set_thumbnail(url=await get_avatar(self.creator))
+        if coin_gif:
+            result_embed.set_image(url=coin_gif)
+        _brand_embed(result_embed)
 
-        await asyncio.sleep(0.3)
         try:
-            await msg.edit(embed=embed, view=None)
+            await msg.edit(embed=result_embed, view=None)
         except Exception as e:
-            print(f'[RESULT DISPLAY FAILED] {e}')
+            print(f"[COINFLIP RESULT] display failed: {e}")
 
         self.stop()
         log_e = discord.Embed(title="🪙 Coinflip Result", color=C_GOLD)
@@ -3757,43 +3788,77 @@ class ProgressiveCoinflipView(BaseGameView):
             result = guess
         won = (result == guess)
 
-        guess_emoji  = "🟡" if guess  == "Heads" else "🟣"
-        result_emoji = "🟡" if result == "Heads" else "🟣"
+        coin_gif     = COINFLIP_HEADS_GIF if result == "Heads" else COINFLIP_TAILS_GIF
+        coin_icon    = "🟡" if result == "Heads" else "⬛"
 
-        # Spinning GIF animation
-        spin_embed = discord.Embed(
-            title="🪙  SABPOT PROGRESSIVE FLIP",
-            description=f"**Round {self.rounds + 1}** · Pot: **{format_amount(self.current_pot)}**\n\n🎲 Flipping the coin...",
-            color=C_GOLD
-        )
-        if COINFLIP_SPINNING_GIF:
-            spin_embed.set_image(url=COINFLIP_SPINNING_GIF)
-        _brand_embed(spin_embed)
-        try:
-            await interaction.edit_original_response(embed=spin_embed)
-        except Exception as e:
-            print(f"[ERROR] {type(e).__name__}: {e}")
-        await asyncio.sleep(2.5)
+        # ── Spinning animation with coin GIF ──
+        spin_frames = [
+            "🪙　　　　",
+            "　🪙　　　",
+            "　　🪙　　",
+            "　　　🪙　",
+            "　　　　🪙",
+            "　　　🪙　",
+            "　　🪙　　",
+            "　🪙　　　",
+            "🪙　　　　",
+            "　🪙　　　",
+        ]
+        for frame in spin_frames:
+            spin_embed = discord.Embed(
+                title="🪙  Coinflip",
+                description=(
+                    f"**Round {self.rounds + 1}** · Pot: **{format_amount(self.current_pot)}** 💎\n\n"
+                    f"{frame}"
+                ),
+                color=C_GOLD
+            )
+            if coin_gif:
+                spin_embed.set_image(url=coin_gif)
+            _brand_embed(spin_embed)
+            try:
+                await interaction.edit_original_response(embed=spin_embed)
+            except Exception as e:
+                print(f"[PCF ANIM] {e}")
+                break
+            await asyncio.sleep(0.35)
 
         if won:
             self.rounds      += 1
             self.current_pot *= 2
             record_streak(self.creator.id, True, self.current_pot)
-            result_gif = COINFLIP_HEADS_GIF if result == "Heads" else COINFLIP_TAILS_GIF
-            result_line = f"✅ **Correct!** Pot doubled → **{format_amount(self.current_pot)}** 💎"
-            embed = self.game_embed(result_line, f"{guess_emoji} {guess}", f"{result_emoji} {result}")
-            if result_gif:
-                embed.set_image(url=result_gif)
+            win_embed = discord.Embed(
+                color=C_WIN,
+                description=(
+                    f"# 🏆  CORRECT  🏆\n"
+                    f"## {coin_icon}  {result.upper()}\n\n"
+                    f"**Pot doubled → {format_amount(self.current_pot)}** 💎\n"
+                    f"**Round {self.rounds}** complete — keep going or cash out!"
+                )
+            )
+            if coin_gif:
+                win_embed.set_image(url=coin_gif)
+            _brand_embed(win_embed)
             try:
-                await interaction.edit_original_response(embed=embed, view=self)
+                await interaction.edit_original_response(embed=win_embed, view=self)
             except Exception as e:
                 print(f"[PROG CF WIN] {e}")
         else:
             self.done = True
             self.stop()
             record_streak(self.creator.id, False, self.current_pot)
-            result_line = f"❌ **Wrong!** You lose **{format_amount(self.current_pot)}** 💎"
-            embed = self.game_embed(result_line, f"{guess_emoji} {guess}", f"{result_emoji} {result}")
+            lose_embed = discord.Embed(
+                color=C_LOSS,
+                description=(
+                    f"# 💀  WRONG  💀\n"
+                    f"## {coin_icon}  {result.upper()}\n\n"
+                    f"**You lose {format_amount(self.current_pot)}** 💎\n"
+                    f"You made it **{self.rounds}** round(s)."
+                )
+            )
+            if coin_gif:
+                lose_embed.set_image(url=coin_gif)
+            _brand_embed(lose_embed)
 
             conn = await get_conn()
             try:
@@ -3803,7 +3868,7 @@ class ProgressiveCoinflipView(BaseGameView):
                 await release_conn(conn)
 
             try:
-                await interaction.edit_original_response(embed=embed, view=None)
+                await interaction.edit_original_response(embed=lose_embed, view=None)
             except Exception as e:
                 print(f"[PROG CF LOSE] {e}")
 
@@ -5177,23 +5242,34 @@ class BlackjackView(BaseGameView):
     def game_embed(self, hide_dealer=True) -> discord.Embed:
         pt          = bj_total(self.player_hand)
         dt          = bj_total([self.dealer_hand[0]]) if hide_dealer else bj_total(self.dealer_hand)
-        dlabel      = f"{dt}?" if hide_dealer else str(bj_total(self.dealer_hand))
+        dlabel      = "?" if hide_dealer else str(bj_total(self.dealer_hand))
         total_bet   = self.bet + self.extra_bet
-        # Potential winnings: blackjack pays 2.5x, normal win pays 2x (both include stake)
         player_bj   = is_blackjack(self.player_hand) and self.extra_bet == 0
         potential   = int(total_bet * 2.5) if player_bj else total_bet * 2
+
+        # Build card strings like screenshot: "6♣ 3♠"
+        player_cards = bj_str(self.player_hand)
+        dealer_cards = bj_str(self.dealer_hand, hide_dealer)
+
         embed = discord.Embed(
             color=C_GOLD,
+            title="🃏  Blackjack",
             description=(
-                f"## ♠️  BLACKJACK\n"
-                f"```\n"
-                f"  You    {bj_str(self.player_hand):>20}  ({pt})\n"
-                f"  Dealer {bj_str(self.dealer_hand, hide_dealer):>20}  ({dlabel})\n"
-                f"```"
+                f"**Bet:** {format_amount(total_bet)} 💎\n"
+                f"**Potential Winnings:** {format_amount(potential)} 💎"
             )
         )
-        embed.add_field(name="Wager",    value=f"`{format_amount(total_bet)}`",  inline=True)
-        embed.add_field(name="Win If",   value=f"`{format_amount(potential)}`",  inline=True)
+        embed.add_field(
+            name="Your Hand:",
+            value=f"{player_cards}\nPlayer's Card Value: **{pt}**",
+            inline=False
+        )
+        dealer_val_display = f"**{dt}** + ?" if hide_dealer else f"**{bj_total(self.dealer_hand)}**"
+        embed.add_field(
+            name="Dealer's Hand:",
+            value=f"{dealer_cards}\nDealer's Card Value: **{dlabel}**",
+            inline=False
+        )
         _brand_embed(embed)
         return embed
 
@@ -5266,17 +5342,29 @@ class BlackjackView(BaseGameView):
 
         net = payout - total_bet
         net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
+        win_icon  = "🏆" if won else ("🔁" if is_push else "💀")
+        win_title = "YOU WIN" if won else ("PUSH" if is_push else "YOU LOSE")
         embed = discord.Embed(
             color=color,
+            title=f"🃏  Blackjack — {result}",
             description=(
-                f"## ♠️  BLACKJACK — {result}\n"
-                f"```\n"
-                f"  You    {bj_str(self.player_hand):>20}  ({pt})\n"
-                f"  Dealer {bj_str(self.dealer_hand):>20}  ({dt})\n"
-                f"```\n"
-                f"{result_desc(won, is_push, total_bet, payout)}"
+                f"# {win_icon}  {win_title}  {win_icon}\n\n"
+                f"**Bet:** {format_amount(total_bet)} 💎"
             )
         )
+        embed.add_field(
+            name="Your Hand:",
+            value=f"{bj_str(self.player_hand)}\nPlayer's Card Value: **{pt}**",
+            inline=False
+        )
+        embed.add_field(
+            name="Dealer's Hand:",
+            value=f"{bj_str(self.dealer_hand)}\nDealer's Card Value: **{dt}**",
+            inline=False
+        )
+        net_str2 = f"+{format_amount(payout - total_bet)}" if won else (f"-{format_amount(total_bet)}" if not is_push else "±0")
+        embed.add_field(name="Result", value=f"`{net_str2}` 💎", inline=True)
+        embed.add_field(name="Payout", value=f"`{format_amount(payout)}` 💎", inline=True)
         _brand_embed(embed)
 
         try:
@@ -5336,7 +5424,7 @@ class BlackjackView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, emoji="👊")
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.blurple, emoji="🃏")
     async def hit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -7305,6 +7393,13 @@ class RPSView(BaseGameView):
         try:
             payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "rps")
             await record_game(conn, self.creator.id, True, self.bet, payout)
+
+# ═══════════════════════════════════════════════════════════
+# END OF PART 1 — paste Part 2 directly below this line
+# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# PART 2 — paste this directly below Part 1
+# ═══════════════════════════════════════════════════════════
             await log_transaction(conn, self.creator.id, "rps_cashout", net)
             if interaction.guild:
                 row = await get_user(conn, self.creator.id)
@@ -7393,13 +7488,6 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(
             f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
-
-# ═══════════════════════════════════════════════════════════
-# END OF PART 1 — paste Part 2 directly below this line
-# ═══════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════
-# PART 2 — paste this directly below Part 1
-# ═══════════════════════════════════════════════════════════
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -10228,20 +10316,8 @@ class WithdrawTicketView(discord.ui.View):
 
 # ── /deposit command ───────────────────────────────────────
 @bot.tree.command(name="deposit", description="Open a deposit ticket — staff will credit your gems.")
-@app_commands.describe(amount="How many gems you want deposited (e.g. 50000 = 50K gems = $5)")
-async def cmd_deposit(interaction: discord.Interaction, amount: str):
+async def cmd_deposit(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-
-    pts = parse_amount(amount)
-    if not pts or pts <= 0:
-        await interaction.followup.send("❌ Invalid amount. Use e.g. `50000`, `50K`, `1M`.", ephemeral=True)
-        return
-
-    if pts < 10_000:
-        await interaction.followup.send("❌ Minimum deposit is **10,000 gems** ($1.00).", ephemeral=True)
-        return
-
-    usd_val = pts / COINS_PER_DOLLAR
 
     guild = bot.get_guild(GUILD_ID)
     ticket_ch = None
@@ -10251,103 +10327,137 @@ async def cmd_deposit(interaction: discord.Interaction, amount: str):
             guild.channels
         )
 
-    ticket_id = f"{interaction.user.name}-{int(discord.utils.time_snowflake(discord.utils.utcnow()) & 0xFFFF):04X}"
-
+    ticket_id = f"{int(discord.utils.time_snowflake(discord.utils.utcnow()) & 0xFFFF):04X}"
     ticket_channel = None
-    thread = None  # keep var name for compat with log embed below
+
     if ticket_ch and guild:
         try:
-            # Permission overwrites — private to user + staff only
             staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
             admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
             overwrites = {
-                guild.default_role:                discord.PermissionOverwrite(read_messages=False),
-                guild.me:                          discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
-                interaction.user:                  discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
+                interaction.user:   discord.PermissionOverwrite(read_messages=True, send_messages=True),
             }
             if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
             if admin_role: overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
             ticket_channel = await guild.create_text_channel(
-                name=f"deposit-{interaction.user.name}-{ticket_id[-4:]}",
+                name=f"deposit-{interaction.user.name}-{ticket_id}",
                 category=ticket_ch.category,
                 overwrites=overwrites,
                 reason=f"Deposit ticket for {interaction.user}"
             )
-            thread = ticket_channel  # alias for log embed
 
             ticket_e = discord.Embed(
                 color=C_GOLD,
                 description=(
                     f"## 🎫  DEPOSIT TICKET\n"
-                    f"Hey {interaction.user.mention}! Your deposit ticket has been created.\n"
-                    f"Staff have been notified and will credit your balance shortly.\n\n"
-                    f"> **Do NOT share any payment details publicly.**"
+                    f"{interaction.user.mention} wants to make a deposit.\n"
+                    f"Staff — please handle this deposit and credit their gems.\n\n"
+                    f"> **Tell the user how much to send and where.**"
                 )
             )
-            ticket_e.add_field(name="📦 Amount Requested", value=f"`{format_amount(pts)} gems`", inline=True)
-            ticket_e.add_field(name="💵 USD Value",         value=f"`${usd_val:.2f}`",           inline=True)
-            ticket_e.add_field(name="🎫 Ticket ID",         value=f"`{ticket_id}`",               inline=True)
-            ticket_e.add_field(name="⏳ Status",            value="`PENDING`",                    inline=True)
-            ticket_e.add_field(name="📈 Rate",              value="`$1.00 = 10,000 gems`",         inline=True)
-            ticket_e.add_field(name="👤 User",              value=interaction.user.mention,       inline=True)
+            ticket_e.add_field(name="👤 User",      value=interaction.user.mention, inline=True)
+            ticket_e.add_field(name="🆔 Ticket ID", value=f"`{ticket_id}`",         inline=True)
+            ticket_e.add_field(name="⏳ Status",    value="`PENDING`",               inline=True)
             _brand_embed(ticket_e)
-
             await ticket_channel.send(embed=ticket_e)
         except Exception as ex:
             print(f"[DEPOSIT TICKET] Could not create channel: {ex}")
             ticket_channel = None
-            thread = None
 
     # ── Reply to user ──────────────────────────────────────
     reply_e = discord.Embed(
         color=C_GOLD,
         description=(
             f"## 🎫  DEPOSIT TICKET OPENED\n"
-            f"Hey {interaction.user.mention}! Your deposit ticket has been created.\n"
-            f"Staff have been notified and will credit your balance shortly.\n"
-            f"{('A private ticket channel has been opened: ' + thread.mention) if thread else 'A private ticket channel has been opened for you.'}"
+            f"{'Your private ticket: ' + ticket_channel.mention if ticket_channel else 'A ticket has been opened for you.'}\n\n"
+            f"Staff will contact you with payment details shortly."
         )
-    )
-    reply_e.add_field(name="📦 Amount Requested", value=f"`{format_amount(pts)} gems`", inline=True)
-    reply_e.add_field(name="💵 USD Value",         value=f"`${usd_val:.2f}`",           inline=True)
-    reply_e.add_field(name="🎫 Ticket ID",         value=f"`{ticket_id}`",               inline=True)
-    reply_e.add_field(name="⏳ Status",            value="`PENDING`",                    inline=True)
-    reply_e.add_field(
-        name="⚠️ Note",
-        value="Staff will review and credit your balance. Do NOT share any payment details publicly.",
-        inline=False
     )
     _brand_embed(reply_e)
     await interaction.followup.send(embed=reply_e, ephemeral=True)
 
     # ── Finance log ────────────────────────────────────────
     log_e = discord.Embed(color=C_GOLD, description="## 🎫  DEPOSIT TICKET OPENED")
-    log_e.add_field(name="User",      value=interaction.user.mention,   inline=True)
-    log_e.add_field(name="Points",    value=format_amount(pts),          inline=True)
-    log_e.add_field(name="USD",       value=f"${usd_val:.2f}",           inline=True)
-    log_e.add_field(name="Ticket ID", value=f"`{ticket_id}`",            inline=True)
-    if thread:
-        log_e.add_field(name="Thread", value=thread.mention,             inline=True)
+    log_e.add_field(name="User",      value=interaction.user.mention,            inline=True)
+    log_e.add_field(name="Ticket ID", value=f"`{ticket_id}`",                    inline=True)
+    if ticket_channel:
+        log_e.add_field(name="Channel", value=ticket_channel.mention,            inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
 
 # ── /withdraw command ──────────────────────────────────────
 # Withdraw a STOCK ITEM using gems — opens a ticket thread.
+class WithdrawSelectView(discord.ui.View):
+    """Shows a dropdown of items the user can afford."""
+    def __init__(self, rows, user_bal):
+        super().__init__(timeout=60)
+        options = []
+        for r in rows[:25]:
+            gem_str = format_amount(r["unit_value"])
+            options.append(discord.SelectOption(
+                label=r["item_name"][:100],
+                value=r["item_name"][:100],
+                description=f"{gem_str} gems",
+                emoji="💎"
+            ))
+        sel = discord.ui.Select(placeholder="Choose an item to withdraw...", options=options)
+        sel.callback = self._on_select
+        self.add_item(sel)
+        self._chosen = None
+
+    async def _on_select(self, interaction: discord.Interaction):
+        self._chosen = interaction.data["values"][0]
+        await interaction.response.defer()
+        self.stop()
+
+    async def on_timeout(self):
+        for c in self.children: c.disabled = True
+
+
 @bot.tree.command(name="withdraw", description="Spend your gems to withdraw an item from the stock shop.")
-@app_commands.describe(
-    item="Name of the item you want (use /stock to see available items)",
-    quantity="How many to withdraw (default 1)"
-)
-async def cmd_withdraw(interaction: discord.Interaction, item: str, quantity: int = 1):
+async def cmd_withdraw(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    if quantity < 1:
-        await interaction.followup.send("❌ Quantity must be at least 1.", ephemeral=True)
+    conn = await get_conn()
+    try:
+        await ensure_user(conn, interaction.user)
+        user_row = await get_user(conn, interaction.user.id)
+        bal = user_row["balance"] if user_row else 0
+        all_rows = await _get_stock(conn)
+    finally:
+        await release_conn(conn)
+
+    # Filter to items user can afford and are in stock
+    affordable = [r for r in all_rows if r["unit_value"] <= bal and r["quantity"] > 0]
+    if not affordable:
+        await interaction.followup.send(
+            "❌ No items available that match your balance. Use `/stock` to see all items.",
+            ephemeral=True
+        )
         return
 
-    item = item.strip()
+    view = WithdrawSelectView(affordable, bal)
+    sel_embed = discord.Embed(
+        color=C_GOLD,
+        title="📦  Withdraw Item",
+        description=(
+            f"Your balance: **{format_amount(bal)}** 💎\n"
+            f"Select an item you can afford:"
+        )
+    )
+    _brand_embed(sel_embed)
+    await interaction.followup.send(embed=sel_embed, view=view, ephemeral=True)
+
+    await view.wait()
+    if not view._chosen:
+        return
+
+    item = view._chosen
+    quantity = 1
 
     conn = await get_conn()
     try:
@@ -10454,23 +10564,26 @@ async def cmd_withdraw(interaction: discord.Interaction, item: str, quantity: in
                 await release_conn(conn2)
 
             ticket_e = discord.Embed(
-                color=C_WARN,
+                color=0x2b2d31,
                 description=(
-                    f"## 📦  WITHDRAWAL TICKET  `#{ticket_id}`\n"
-                    f"{interaction.user.mention} wants to withdraw from the stock shop.\n"
-                    f"Staff — please deliver the item and click **Mark Delivered**."
+                    f"🚨 **Withdrawal Request**\n\n"
+                    f"**Requester**\n{interaction.user.mention}\n\n"
+                    f"**Requested Items**\n"
+                    f"- {item} x1 - {format_amount(total_cost)} 💎\n\n"
+                    f"**Total Value**\n"
+                    f"{format_amount(total_cost)} 💎\n\n"
+                    f"⚠️ **Important Information**\n"
+                    f"• Do not spam ping staff members\n"
+                    f"• Staff will process your withdrawal as soon as possible\n"
+                    f"• This ticket will be handled by an administrator\n"
+                    f"• Make sure to provide any additional details if needed\n\n"
+                    f"User ID: {interaction.user.id} • Ticket ID: {ticket_id}"
                 )
             )
-            ticket_e.add_field(name="📦 Item",       value=f"`{item}`",                  inline=True)
-            ticket_e.add_field(name="🔢 Quantity",   value=str(quantity),                inline=True)
-            ticket_e.add_field(name="💰 Cost Paid",  value=f"`{format_amount(total_cost)} gems`", inline=True)
-            ticket_e.add_field(name="💵 USD Value",  value=f"`${usd_val:.2f}`",          inline=True)
-            ticket_e.add_field(name="👤 User",       value=interaction.user.mention,     inline=True)
-            ticket_e.add_field(name="🆔 Ticket ID",  value=f"`#{ticket_id}`",            inline=True)
             _brand_embed(ticket_e)
 
             view = WithdrawTicketView(ticket_id=ticket_id, user_id=interaction.user.id)
-            await thread.send(embed=ticket_e, view=view)
+            await thread.send(content=interaction.user.mention, embed=ticket_e, view=view)
         except Exception as ex:
             print(f"[WITHDRAW TICKET] Thread creation failed: {ex}")
             thread = None
@@ -10524,17 +10637,15 @@ async def cmd_stock(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # ── /addstock ──────────────────────────────────────────────
-@bot.tree.command(name="addstock", description="[Admin] Add a new item to the stock shop or restock an existing one.")
+@bot.tree.command(name="addstock", description="[Admin] Add an item to the stock shop.")
 @app_commands.describe(
     item="Item name (e.g. 'Roblox $5 Gift Card')",
-    quantity="How many units to add",
     unit_value="Value in gems e.g. 70M, 100M, 500K"
 )
 @admin_only()
 async def cmd_addstock(
     interaction: discord.Interaction,
     item: str,
-    quantity: int,
     unit_value: str
 ):
     await interaction.response.defer(ephemeral=True)
@@ -10545,33 +10656,29 @@ async def cmd_addstock(
         return
     unit_value = parsed_value
 
-    if quantity < 1:
-        await interaction.followup.send("❌ Quantity must be ≥ 1.", ephemeral=True)
-        return
-
     item = item.strip()
     conn = await get_conn()
     try:
         existing = await _get_stock_item(conn, item)
         if existing:
-            # Restock existing item
+            # Restock — increment by 1, update value
             await conn.execute(
                 """UPDATE stock
-                   SET quantity   = quantity + $1,
-                       unit_value = $2
-                   WHERE item_name = $3""",
-                quantity, unit_value, item
+                   SET quantity   = quantity + 1,
+                       unit_value = $1
+                   WHERE item_name = $2""",
+                unit_value, item
             )
-            action = "restocked"
-            new_qty = existing["quantity"] + quantity
+            action  = "restocked"
+            new_qty = existing["quantity"] + 1
         else:
-            # Create new item
+            # New item — start at 1
             await conn.execute(
-                "INSERT INTO stock (item_name, quantity, unit_value) VALUES ($1, $2, $3)",
-                item, quantity, unit_value
+                "INSERT INTO stock (item_name, quantity, unit_value) VALUES ($1, 1, $2)",
+                item, unit_value
             )
             action  = "added"
-            new_qty = quantity
+            new_qty = 1
     finally:
         await release_conn(conn)
 
@@ -10580,35 +10687,28 @@ async def cmd_addstock(
         color=C_WIN,
         description=f"## ✅  Stock {action.upper()}"
     )
-    embed.add_field(name="Item",       value=f"`{item}`",                           inline=True)
-    embed.add_field(name="Added",      value=str(quantity),                         inline=True)
-    embed.add_field(name="Total Stock",value=str(new_qty),                          inline=True)
+    embed.add_field(name="Item",       value=f"`{item}`",                                      inline=True)
+    embed.add_field(name="In Stock",   value=str(new_qty),                                     inline=True)
     embed.add_field(name="Unit Cost",  value=f"`{format_amount(unit_value)} gems` (`${usd:.2f}`)", inline=True)
-    embed.add_field(name="Action",     value=action,                                inline=True)
     embed.set_footer(text=f"{interaction.user}  ·  {now_ts()}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
     log_e = discord.Embed(color=C_WIN, description=f"## ✅  STOCK {action.upper()}")
     log_e.add_field(name="Admin",      value=interaction.user.mention, inline=True)
     log_e.add_field(name="Item",       value=f"`{item}`",              inline=True)
-    log_e.add_field(name="Qty Added",  value=str(quantity),            inline=True)
-    log_e.add_field(name="New Total",  value=str(new_qty),             inline=True)
+    log_e.add_field(name="In Stock",   value=str(new_qty),             inline=True)
     log_e.add_field(name="Unit Value", value=format_amount(unit_value),inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
 
 # ── /removestock ───────────────────────────────────────────
-@bot.tree.command(name="removestock", description="[Admin] Remove or reduce stock for an item.")
-@app_commands.describe(
-    item="Exact item name to remove",
-    quantity="Units to remove (leave blank to remove item entirely)"
-)
+@bot.tree.command(name="removestock", description="[Admin] Remove an item from the stock shop.")
+@app_commands.describe(item="Exact item name to remove")
 @admin_only()
 async def cmd_removestock(
     interaction: discord.Interaction,
-    item: str,
-    quantity: Optional[int] = None
+    item: str
 ):
     await interaction.response.defer(ephemeral=True)
 
@@ -10624,23 +10724,19 @@ async def cmd_removestock(
 
         old_qty = existing["quantity"]
 
-        if quantity is None or quantity >= old_qty:
-            # Delete entirely
+        if old_qty <= 1:
+            # Last one — delete entirely
             await conn.execute("DELETE FROM stock WHERE item_name=$1", item)
             action  = "deleted"
             new_qty = 0
-            removed = old_qty
         else:
-            if quantity < 1:
-                await interaction.followup.send("❌ Quantity must be ≥ 1.", ephemeral=True)
-                return
+            # Remove one
             await conn.execute(
-                "UPDATE stock SET quantity = quantity - $1 WHERE item_name = $2",
-                quantity, item
+                "UPDATE stock SET quantity = quantity - 1 WHERE item_name = $1",
+                item
             )
             action  = "reduced"
-            removed = quantity
-            new_qty = old_qty - quantity
+            new_qty = old_qty - 1
     finally:
         await release_conn(conn)
 
@@ -10648,17 +10744,14 @@ async def cmd_removestock(
         color=C_LOSS,
         description=f"## 🗑️  Stock {action.upper()}"
     )
-    embed.add_field(name="Item",      value=f"`{item}`",  inline=True)
-    embed.add_field(name="Removed",   value=str(removed), inline=True)
-    embed.add_field(name="Remaining", value=str(new_qty), inline=True)
-    embed.add_field(name="Action",    value=action,        inline=True)
+    embed.add_field(name="Item",      value=f"`{item}`", inline=True)
+    embed.add_field(name="Remaining", value=str(new_qty) if new_qty > 0 else "❌ Removed", inline=True)
     embed.set_footer(text=f"{interaction.user}  ·  {now_ts()}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
     log_e = discord.Embed(color=C_LOSS, description=f"## 🗑️  STOCK {action.upper()}")
     log_e.add_field(name="Admin",     value=interaction.user.mention, inline=True)
     log_e.add_field(name="Item",      value=f"`{item}`",              inline=True)
-    log_e.add_field(name="Removed",   value=str(removed),             inline=True)
     log_e.add_field(name="Remaining", value=str(new_qty),             inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
