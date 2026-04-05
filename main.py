@@ -168,6 +168,45 @@ MAX_BET    = 75_000_000_000   # 750M gems display
 MAX_PAYOUT = 165_000_000_000  # 1.65B gems display
 MIN_BET    = 10_000_000   # 100K gems display
 
+# ── Game lock system ───────────────────────────────────────────
+# Set of game names currently locked to staff/admin/owner only
+LOCKED_GAMES: set = set()
+
+# All lockable games — name shown in dropdown : internal key matching command name
+ALL_GAMES = {
+    "🪙 Coinflip":           "coinflip",
+    "🎲 Dice":               "dice",
+    "🃏 Blackjack":          "blackjack",
+    "🎲 Blackjack Dice":     "blackjackdice",
+    "🎡 Roulette":           "roulette",
+    "🎴 Baccarat":           "baccarat",
+    "⚔️ War":                "war",
+    "🔼 HiLo":               "hilo",
+    "🗼 Towers":             "towers",
+    "💣 Mines":              "mines",
+    "🎰 Slots":              "slots",
+    "🏇 Horse Race":         "horserace",
+    "🎟️ Scratch":            "scratch",
+    "🎨 Color Dice":         "colordice",
+    "📈 Progressive Coinflip": "progressivecoinflip",
+    "🎲 Progressive Dice":   "progressivedice",
+    "⚔️ Case Battle":        "createcasebattle",
+}
+
+ALLOWED_LOCK_ROLES = {
+    "Owner", "Operations Manager", "Deposit Moderator",
+    "Member", "Verified", "💎 VIP",
+}
+
+def is_game_locked(game_key: str, member) -> bool:
+    """Returns True if the game is locked AND the member has none of the allowed roles."""
+    if game_key not in LOCKED_GAMES:
+        return False
+    member_role_names = {r.name for r in member.roles}
+    # Staff/admin/owner can always play even when locked
+    bypass_roles = {"Owner", "Operations Manager", "Deposit Moderator"}
+    return not bool(member_role_names & bypass_roles)
+
 # ─── Daily reward ─────────────────────────────────────────────
 DAILY_MIN = 1          # 1 gem
 DAILY_MAX = 1_000_000_000 # 10M gems display
@@ -1478,6 +1517,7 @@ async def on_ready():
     asyncio.create_task(_daily_dm_loop())
     asyncio.create_task(_auto_create_roles())
     asyncio.create_task(_auto_create_channels())
+    asyncio.create_task(channel_cleanup_loop())
 
 async def _auto_create_roles():
     """Auto-create all required roles on startup if they don't exist yet."""
@@ -1540,11 +1580,14 @@ async def _auto_create_channels():
         # CHAT
         "💬┃general",
         "🖼️┃media",
+        "🤝┃vouch",
         # VERIFICATION
         "✅┃verify",
         # VIP
         "👑┃vip-lounge",
         "💎・vip-room",
+        # DEPOSITS
+        "💳┃deposits",
         # LOGS
         "📊┃game-log",
         "💰┃finance-log",
@@ -1552,6 +1595,7 @@ async def _auto_create_channels():
         "📨┃invite-log",
         "✅┃verify-log",
         "✅┃are-we-legit-log",
+        "🚨┃withdraws",
     }
 
     APPROVED_CATEGORIES = {
@@ -1561,6 +1605,8 @@ async def _auto_create_channels():
         "Chat",
         "🔒 VERIFICATION",
         "👑 VIP",
+        "Deposits",
+        "Withdraws",
         "📊 LOGS",
     }
 
@@ -1583,8 +1629,11 @@ async def _auto_create_channels():
         # Keep user-created VIP rooms (💎・ prefix but not the default vip-room)
         if ch.name.startswith("💎・") and ch.name != "💎・vip-room":
             continue
-        # Keep ticket channels (deposit tickets etc)
-        if "ticket" in ch.name.lower():
+        # Keep wd- withdrawal ticket channels
+        if ch.name.lower().startswith("wd-"):
+            continue
+        # Keep deposit ticket channels
+        if ch.name.lower().startswith("deposit-"):
             continue
         try:
             await ch.delete(reason="Sabpot auto-cleanup: channel not in approved layout")
@@ -1665,6 +1714,16 @@ async def _auto_create_channels():
         if owner_role:  ow[owner_role]  = discord.PermissionOverwrite(read_messages=True, send_messages=True)
         return ow
 
+    def _admin_ow():
+        """Admin + Owner only — Staff cannot see these channels."""
+        ow = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.me:           discord.PermissionOverwrite(read_messages=True,  send_messages=True, manage_channels=True),
+        }
+        if admin_role:  ow[admin_role]  = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        if owner_role:  ow[owner_role]  = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        return ow
+
     def _vouches_ow():
         ow = {
             guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
@@ -1697,16 +1756,17 @@ async def _auto_create_channels():
 
     # EXTRA
     cat_extra  = await _get_or_create_cat("Extra")
-    await _get_or_create_ch("🎁┃tips",           cat_extra, "Send tips to others",           _members_ow())
-    await _get_or_create_ch("✨┃rain",            cat_extra, "Gem rain events",              _members_ow())
-    await _get_or_create_ch("🎁┃promo-codes",    cat_extra, "Redeem promo codes here",       _members_ow())
-    await _get_or_create_ch("💜┃boost-rewards",  cat_extra, "Rewards for boosting the server", _members_ow())
-    await _get_or_create_ch("🚨┃withdrawals",    cat_extra, "Withdrawal requests",           _members_ow())
+    await _get_or_create_ch("🎁┃tips",           cat_extra, "Send tips to others",              _members_ow())
+    await _get_or_create_ch("✨┃rain",            cat_extra, "Gem rain events",                 _members_ow())
+    await _get_or_create_ch("🎁┃promo-codes",    cat_extra, "Redeem promo codes here",          _members_ow())
+    await _get_or_create_ch("💜┃boost-rewards",  cat_extra, "Rewards for boosting the server",  _members_ow())
+    await _get_or_create_ch("🚨┃withdrawals",    cat_extra, "Use /withdraw to request an item", _members_ow())
 
     # CHAT
     cat_chat   = await _get_or_create_cat("Chat")
     games_ch   = await _get_or_create_ch("💬┃general",  cat_chat, "General chat",          _members_ow())
     await _get_or_create_ch("🖼️┃media",                  cat_chat, "Share media here",     _members_ow())
+    await _get_or_create_ch("🤝┃vouch",                  cat_chat, "Vouch for our service", _members_ow())
 
     # VERIFICATION
     cat_verify = await _get_or_create_cat("🔒 VERIFICATION")
@@ -1722,12 +1782,20 @@ async def _auto_create_channels():
 
     # LOGS (staff only)
     cat_logs       = await _get_or_create_cat("📊 LOGS")
-    game_log_ch    = await _get_or_create_ch("📊┃game-log",    cat_logs, "All game results",           _staff_ow())
-    finance_log_ch = await _get_or_create_ch("💰┃finance-log", cat_logs, "Deposits & withdrawals",    _staff_ow())
-    tip_log_ch     = await _get_or_create_ch("💸┃tip-log",     cat_logs, "Tip transactions",          _staff_ow())
-    invite_log_ch  = await _get_or_create_ch("📨┃invite-log",  cat_logs, "Invite reward logs",        _staff_ow())
-    verify_log_ch  = await _get_or_create_ch("✅┃verify-log",  cat_logs, "Verification logs",         _staff_ow())
-    vouches_ch     = await _get_or_create_ch("✅┃are-we-legit-log", cat_logs, "Public vouch feed",    _staff_ow())
+    game_log_ch    = await _get_or_create_ch("📊┃game-log",         cat_logs, "All game results",          _admin_ow())
+    finance_log_ch = await _get_or_create_ch("💰┃finance-log",      cat_logs, "Deposits & withdrawals",    _admin_ow())
+    tip_log_ch     = await _get_or_create_ch("💸┃tip-log",          cat_logs, "Tip transactions",          _admin_ow())
+    invite_log_ch  = await _get_or_create_ch("📨┃invite-log",       cat_logs, "Invite reward logs",        _admin_ow())
+    verify_log_ch  = await _get_or_create_ch("✅┃verify-log",       cat_logs, "Verification logs",         _admin_ow())
+    vouches_ch     = await _get_or_create_ch("✅┃are-we-legit-log",  cat_logs, "Public vouch feed",         _admin_ow())
+    withdraw_log_ch= await _get_or_create_ch("🚨┃withdraws",        cat_logs, "All withdrawal tickets",    _staff_ow())
+
+    # DEPOSITS (staff-visible — deposit- ticket channels auto-created here)
+    cat_deposits   = await _get_or_create_cat("Deposits")
+    await _get_or_create_ch("💳┃deposits",       cat_deposits, "Use /deposit to open a ticket", _members_ow())
+
+    # WITHDRAWS (staff-visible — withdraw- ticket channels auto-created here)
+    cat_withdraws  = await _get_or_create_cat("Withdraws")
 
     # Dummy vars for compat (no separate case-battles category in this layout)
     cb_ch = games_ch
@@ -1744,14 +1812,15 @@ async def _auto_create_channels():
     if vouches_ch:     VOUCHES_CHANNEL_ID     = vouches_ch.id
 
     settings = {}
-    if game_log_ch:    settings["channel_game_log"]    = str(game_log_ch.id)
-    if finance_log_ch: settings["channel_finance_log"] = str(finance_log_ch.id)
-    if tip_log_ch:     settings["channel_tip_log"]     = str(tip_log_ch.id)
-    if invite_log_ch:  settings["channel_invite_log"]  = str(invite_log_ch.id)
-    if verify_log_ch:  settings["channel_verify_log"]  = str(verify_log_ch.id)
-    if cb_ch:          settings["channel_case_battles"]= str(cb_ch.id)
-    if vouches_ch:     settings["channel_vouches"]     = str(vouches_ch.id)
-    if games_ch:       settings["channel_games"]       = str(games_ch.id)
+    if game_log_ch:       settings["channel_game_log"]     = str(game_log_ch.id)
+    if finance_log_ch:    settings["channel_finance_log"]  = str(finance_log_ch.id)
+    if tip_log_ch:        settings["channel_tip_log"]      = str(tip_log_ch.id)
+    if invite_log_ch:     settings["channel_invite_log"]   = str(invite_log_ch.id)
+    if verify_log_ch:     settings["channel_verify_log"]   = str(verify_log_ch.id)
+    if cb_ch:             settings["channel_case_battles"] = str(cb_ch.id)
+    if vouches_ch:        settings["channel_vouches"]      = str(vouches_ch.id)
+    if games_ch:          settings["channel_games"]        = str(games_ch.id)
+    if withdraw_log_ch:   settings["channel_withdraw_log"] = str(withdraw_log_ch.id)
 
     if settings:
         conn = await get_conn()
@@ -4004,6 +4073,11 @@ async def cmd_progressivecoinflip(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(f"⏳ Wait **{wait:.1f}s** before starting another game.", ephemeral=True)
         return
+    if is_game_locked("progressivecoinflip", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Progressivecoinflip** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(f"❌ Minimum bet is **{format_amount(MIN_BET)}**.", ephemeral=True)
@@ -4279,6 +4353,11 @@ async def cmd_progressivedice(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(f"⏳ Wait **{wait:.1f}s** before starting another game.", ephemeral=True)
         return
+    if is_game_locked("progressivedice", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Progressivedice** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(f"❌ Minimum bet is **{format_amount(MIN_BET)}**.", ephemeral=True)
@@ -4321,6 +4400,11 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
     wait = check_cooldown("coinflip", interaction.user.id)
     if wait > 0:
         await interaction.response.send_message(f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("coinflip", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Coinflip** is currently locked to staff only.", ephemeral=True
+        )
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -4602,6 +4686,11 @@ async def cmd_dice(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
         return
+    if is_game_locked("dice", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Dice** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(
@@ -4829,6 +4918,11 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
     wait = check_cooldown("roulette", interaction.user.id)
     if wait > 0:
         await interaction.response.send_message(f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("roulette", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Roulette** is currently locked to staff only.", ephemeral=True
+        )
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -5159,6 +5253,11 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
     wait = check_cooldown("baccarat", interaction.user.id)
     if wait > 0:
         await interaction.response.send_message(f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("baccarat", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Baccarat** is currently locked to staff only.", ephemeral=True
+        )
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -5513,6 +5612,11 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
     wait = check_cooldown("blackjack", interaction.user.id)
     if wait > 0:
         await interaction.response.send_message(f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("blackjack", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Blackjack** is currently locked to staff only.", ephemeral=True
+        )
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -5880,6 +5984,11 @@ async def cmd_blackjackdice(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"⏳ Wait **{wait:.1f}s** before playing again.", ephemeral=True)
         return
+    if is_game_locked("blackjackdice", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Blackjackdice** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(
@@ -6193,6 +6302,11 @@ async def cmd_war(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(
             f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("war", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **War** is currently locked to staff only.", ephemeral=True
+        )
         return
 
     amt = parse_amount(bet)
@@ -6649,6 +6763,11 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
         return
+    if is_game_locked("hilo", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Hilo** is currently locked to staff only.", ephemeral=True
+        )
+        return
 
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -7042,6 +7161,11 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(
             f"⏳ Cooldown — wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("towers", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Towers** is currently locked to staff only.", ephemeral=True
+        )
         return
 
     amt = parse_amount(bet)
@@ -7852,6 +7976,11 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
     if wait > 0:
         await interaction.response.send_message(f"⏳ Wait **{wait:.1f}s**.", ephemeral=True)
         return
+    if is_game_locked("mines", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Mines** is currently locked to staff only.", ephemeral=True
+        )
+        return
     if mines < 1 or mines > 24:
         await interaction.response.send_message("❌ Mines must be between **1** and **24**.", ephemeral=True)
         return
@@ -8229,6 +8358,11 @@ async def cmd_scratch(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"⏳ Wait **{wait:.1f}s** before playing again.", ephemeral=True)
         return
+    if is_game_locked("scratch", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Scratch** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(
@@ -8369,6 +8503,11 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if wait > 0:
         await interaction.response.send_message(
             f"⏳ Wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("horserace", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Horse Race** is currently locked to staff only.", ephemeral=True
+        )
         return
 
     if horse < 1 or horse > 4:
@@ -9116,6 +9255,11 @@ class SlotsView(BaseGameView):
 @bot.tree.command(name="slots", description="Spin the slot machine — match symbols to win big!")
 @app_commands.describe(amount="Amount to bet (e.g. 1K, 500K, 1M)")
 async def cmd_slots(interaction: discord.Interaction, amount: str):
+    if is_game_locked("slots", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Slots** is currently locked to staff only.", ephemeral=True
+        )
+        return
     amt = parse_amount(amount)
     if not amt or amt < MIN_BET:
         await interaction.response.send_message(
@@ -9455,6 +9599,11 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
     if wait > 0:
         await interaction.response.send_message(
             f"⏳ Wait **{wait:.1f}s** before playing again.", ephemeral=True)
+        return
+    if is_game_locked("colordice", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Colordice** is currently locked to staff only.", ephemeral=True
+        )
         return
     amt = parse_amount(bet)
     if not amt or amt < MIN_BET:
@@ -10322,10 +10471,15 @@ async def cmd_deposit(interaction: discord.Interaction):
     guild = bot.get_guild(GUILD_ID)
     ticket_ch = None
     if guild:
-        ticket_ch = discord.utils.find(
-            lambda c: "deposit" in c.name.lower() and isinstance(c, discord.TextChannel),
-            guild.channels
-        )
+        # Use the Deposits category — deposit- tickets live there
+        deposits_cat = discord.utils.get(guild.categories, name="Deposits")
+        if deposits_cat:
+            ticket_ch = discord.utils.get(guild.text_channels, category=deposits_cat)
+        if not ticket_ch:
+            ticket_ch = discord.utils.find(
+                lambda c: "deposit" in c.name.lower() and isinstance(c, discord.TextChannel),
+                guild.channels
+            )
 
     ticket_id = f"{int(discord.utils.time_snowflake(discord.utils.utcnow()) & 0xFFFF):04X}"
     ticket_channel = None
@@ -10344,7 +10498,7 @@ async def cmd_deposit(interaction: discord.Interaction):
 
             ticket_channel = await guild.create_text_channel(
                 name=f"deposit-{interaction.user.name}-{ticket_id}",
-                category=ticket_ch.category,
+                category=deposits_cat or ticket_ch.category,
                 overwrites=overwrites,
                 reason=f"Deposit ticket for {interaction.user}"
             )
@@ -10530,14 +10684,20 @@ async def cmd_withdraw(interaction: discord.Interaction):
     thread = None
     ticket_ch = None
     if guild:
-        ticket_ch = discord.utils.find(
-            lambda c: "withdraw" in c.name.lower() and isinstance(c, discord.TextChannel),
-            guild.channels
-        )
+        # Look for the Withdraws category first, then any channel with "withdraw" in name
+        withdraws_cat = discord.utils.get(guild.categories, name="Withdraws")
+        if withdraws_cat:
+            ticket_ch = discord.utils.get(guild.text_channels, category=withdraws_cat)
+        if not ticket_ch:
+            ticket_ch = discord.utils.find(
+                lambda c: "withdraw" in c.name.lower() and isinstance(c, discord.TextChannel),
+                guild.channels
+            )
     if ticket_ch and guild:
         try:
             staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
             admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+            owner_role = discord.utils.get(guild.roles, name=OWNER_ROLE_NAME)
             overwrites = {
                 guild.default_role:                discord.PermissionOverwrite(read_messages=False),
                 guild.me:                          discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
@@ -10545,10 +10705,14 @@ async def cmd_withdraw(interaction: discord.Interaction):
             }
             if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
             if admin_role: overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if owner_role: overwrites[owner_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+            # Use the Withdraws category for the new ticket channel
+            target_category = ticket_ch.category
 
             thread = await guild.create_text_channel(
-                name=f"wd-{interaction.user.name}-{ticket_id}",
-                category=ticket_ch.category,
+                name=f"withdraw-{interaction.user.name}",
+                category=target_category,
                 overwrites=overwrites,
                 reason=f"Withdrawal ticket #{ticket_id} for {interaction.user}"
             )
@@ -10563,13 +10727,14 @@ async def cmd_withdraw(interaction: discord.Interaction):
             finally:
                 await release_conn(conn2)
 
+            # Build the ticket embed matching the exact screenshot format
             ticket_e = discord.Embed(
                 color=0x2b2d31,
                 description=(
                     f"🚨 **Withdrawal Request**\n\n"
                     f"**Requester**\n{interaction.user.mention}\n\n"
                     f"**Requested Items**\n"
-                    f"- {item} x1 - {format_amount(total_cost)} 💎\n\n"
+                    f"- {item} x{quantity} - {format_amount(total_cost)} 💎\n\n"
                     f"**Total Value**\n"
                     f"{format_amount(total_cost)} 💎\n\n"
                     f"⚠️ **Important Information**\n"
@@ -10583,7 +10748,32 @@ async def cmd_withdraw(interaction: discord.Interaction):
             _brand_embed(ticket_e)
 
             view = WithdrawTicketView(ticket_id=ticket_id, user_id=interaction.user.id)
-            await thread.send(content=interaction.user.mention, embed=ticket_e, view=view)
+            # Ping staff + user when ticket opens
+            ping_content = f"{interaction.user.mention}"
+            if staff_role: ping_content += f" {staff_role.mention}"
+            await thread.send(content=ping_content, embed=ticket_e, view=view)
+
+            # Post to withdraws channel so staff can see all tickets in one place
+            try:
+                withdraw_log_ch = discord.utils.get(guild.text_channels, name="🚨┃withdraws")
+                if withdraw_log_ch:
+                    log_ticket_e = discord.Embed(
+                        color=0xFFA500,
+                        description=(
+                            f"📤 **New Withdrawal Ticket**\n\n"
+                            f"**Requester:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                            f"**Ticket Channel:** {thread.mention}\n\n"
+                            f"**Requested Items**\n"
+                            f"- {item} x{quantity} - {format_amount(total_cost)} 💎\n\n"
+                            f"**Total Value:** {format_amount(total_cost)} 💎\n\n"
+                            f"User ID: {interaction.user.id} • Ticket ID: {ticket_id}"
+                        )
+                    )
+                    _brand_embed(log_ticket_e)
+                    await withdraw_log_ch.send(embed=log_ticket_e)
+            except Exception as log_ex:
+                print(f"[WITHDRAW LOG] Could not post to withdraws: {log_ex}")
+
         except Exception as ex:
             print(f"[WITHDRAW TICKET] Thread creation failed: {ex}")
             thread = None
@@ -15191,6 +15381,11 @@ async def _cb_timeout(battle_id: int, message, view: CaseBattleLobbyView):
 
 @bot.tree.command(name="createcasebattle", description="Create a case battle and challenge others.")
 async def cmd_createcasebattle(interaction: discord.Interaction):
+    if is_game_locked("createcasebattle", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Case Battle** is currently locked to staff only.", ephemeral=True
+        )
+        return
     setup_view = CaseBattleSetupView(interaction.user)
     await interaction.response.send_message(
         embed=setup_view._build_embed(),
@@ -15546,6 +15741,279 @@ def _build_ach_display(unlocked: set) -> str:
 # /disable — Owner kill switch (shuts bot down, harms nothing)
 # Only usable by the specific owner user ID
 # ══════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
+# Auto channel cleanup loop — runs every 60 seconds
+# Deletes any channel not in the approved list
+# ══════════════════════════════════════════════════════════════
+APPROVED_CHANNELS_GLOBAL = {
+    "📋┃rules",
+    "📢┃announcements", "📢┃bot-announcements",
+    "🎁┃giveaways", "✅┃are-we-legit",
+    "🎁┃tips", "✨┃rain", "🎁┃promo-codes", "💜┃boost-rewards", "🚨┃withdrawals",
+    "💬┃general", "🖼️┃media", "🤝┃vouch",
+    "✅┃verify",
+    "👑┃vip-lounge", "💎・vip-room",
+    "💳┃deposits",
+    "📊┃game-log", "💰┃finance-log", "💸┃tip-log",
+    "📨┃invite-log", "✅┃verify-log", "✅┃are-we-legit-log",
+    "🚨┃withdraws",
+}
+
+async def channel_cleanup_loop():
+    """Background task — deletes unapproved channels every 60 seconds."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(20)  # brief startup delay
+    while not bot.is_closed():
+        try:
+            guild = bot.get_guild(GUILD_ID)
+            if guild:
+                for ch in list(guild.text_channels):
+                    ch_name = ch.name.lower()
+                    # Keep approved channels
+                    if ch.name in APPROVED_CHANNELS_GLOBAL:
+                        continue
+                    # Keep withdrawal ticket channels (withdraw-username)
+                    if ch_name.startswith("withdraw-") and ch_name != "withdraws":
+                        continue
+                    # Keep deposit ticket channels
+                    if ch_name.startswith("deposit-"):
+                        continue
+                    # Keep user VIP rooms (💎・ prefix, not the default)
+                    if ch.name.startswith("💎・") and ch.name != "💎・vip-room":
+                        continue
+                    try:
+                        await ch.delete(reason="SABFlippy auto-cleanup: unapproved channel")
+                        print(f"[CLEANUP] Deleted unapproved channel: #{ch.name}")
+                    except Exception as e:
+                        print(f"[CLEANUP] Could not delete #{ch.name}: {e}")
+        except Exception as e:
+            print(f"[CLEANUP] Loop error: {e}")
+        await asyncio.sleep(60)
+
+
+# ══════════════════════════════════════════════════════════════
+# /close — Closes the withdrawal ticket channel it's used in
+# ══════════════════════════════════════════════════════════════
+@bot.tree.command(name="close", description="Close the withdrawal ticket in this channel.")
+async def cmd_close(interaction: discord.Interaction):
+    ch = interaction.channel
+    ch_name = ch.name.lower() if ch else ""
+
+    # Must be a withdraw- ticket channel (not the main withdrawals channel)
+    if not (ch_name.startswith("withdraw-") and ch_name != "withdraws" and ch_name != "withdrawals"):
+        await interaction.response.send_message(
+            "❌ **No ticket found.** This command can only be used inside a withdrawal ticket channel.",
+            ephemeral=True
+        )
+        return
+
+    # Only staff/admin/owner can close
+    member = interaction.user
+    allowed_roles = {STAFF_ROLE_NAME, ADMIN_ROLE_NAME, OWNER_ROLE_NAME}
+    has_perms = any(r.name in allowed_roles for r in member.roles)
+    if not has_perms:
+        await interaction.response.send_message(
+            "❌ You don't have permission to close tickets.",
+            ephemeral=True
+        )
+        return
+
+    close_e = discord.Embed(
+        color=0xFF4444,
+        description=(
+            f"🔒 **Ticket Closed**\n\n"
+            f"**Closed by:** {member.mention}\n"
+            f"**Channel:** `#{ch.name}`\n\n"
+            f"This channel will be deleted in **5 seconds**."
+        )
+    )
+    _brand_embed(close_e)
+    await interaction.response.send_message(embed=close_e)
+
+    # Update DB status
+    try:
+        conn = await get_conn()
+        try:
+            await conn.execute(
+                "UPDATE withdrawals_queue SET status='closed' WHERE channel_id=$1 AND status='pending'",
+                str(ch.id)
+            )
+        finally:
+            await release_conn(conn)
+    except Exception as e:
+        print(f"[CLOSE] DB update error: {e}")
+
+    # Log the closure to withdraws
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            withdraw_log_ch = discord.utils.get(guild.text_channels, name="🚨┃withdraws")
+            if withdraw_log_ch:
+                closed_e = discord.Embed(
+                    color=0xFF4444,
+                    description=(
+                        f"🔒 **Ticket Closed**\n\n"
+                        f"**Closed by:** {member.mention}\n"
+                        f"**Channel:** `#{ch.name}`"
+                    )
+                )
+                _brand_embed(closed_e)
+                await withdraw_log_ch.send(embed=closed_e)
+    except Exception as e:
+        print(f"[CLOSE] Could not log closure: {e}")
+
+    await asyncio.sleep(5)
+    try:
+        await ch.delete(reason=f"Ticket closed by {member}")
+        print(f"[CLOSE] Ticket channel #{ch.name} closed by {member}")
+    except Exception as e:
+        print(f"[CLOSE] Could not delete channel: {e}")
+
+
+
+# ══════════════════════════════════════════════════════════════
+# /lock — Lock a game to staff only (dropdown of all games)
+# /unlock — Unlock a previously locked game
+# Only Owner / Admin / Staff can use these
+# ══════════════════════════════════════════════════════════════
+
+class GameLockSelect(discord.ui.Select):
+    def __init__(self, action: str):
+        self.action = action  # "lock" or "unlock"
+        if action == "lock":
+            eligible = {k: v for k, v in ALL_GAMES.items() if v not in LOCKED_GAMES}
+            placeholder = "Select a game to lock..."
+        else:
+            eligible = {k: v for k, v in ALL_GAMES.items() if v in LOCKED_GAMES}
+            placeholder = "Select a game to unlock..."
+
+        options = [
+            discord.SelectOption(label=label, value=key)
+            for label, key in eligible.items()
+        ] if eligible else [
+            discord.SelectOption(label="No games available", value="none")
+        ]
+
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options[:25],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        # Re-check permissions inside callback
+        allowed = {OWNER_ROLE_NAME, ADMIN_ROLE_NAME, STAFF_ROLE_NAME}
+        if not any(r.name in allowed for r in interaction.user.roles):
+            await interaction.response.send_message("❌ No permission.", ephemeral=True)
+            return
+
+        selected = self.values[0]
+        if selected == "none":
+            await interaction.response.send_message("❌ Nothing to change.", ephemeral=True)
+            return
+
+        # Find display label
+        game_label = next((lbl for lbl, key in ALL_GAMES.items() if key == selected), selected)
+
+        if self.action == "lock":
+            LOCKED_GAMES.add(selected)
+            color = 0xFF4444
+            status = "🔒 Locked"
+            desc = (
+                f"🔒 **{game_label}** has been **locked**.\n\n"
+                f"Only **{OWNER_ROLE_NAME}**, **{ADMIN_ROLE_NAME}**, and **{STAFF_ROLE_NAME}** can play it.\n"
+                f"All other members will be blocked."
+            )
+        else:
+            LOCKED_GAMES.discard(selected)
+            color = 0x57F287
+            status = "🔓 Unlocked"
+            desc = (
+                f"🔓 **{game_label}** has been **unlocked**.\n\n"
+                f"All members can play it again."
+            )
+
+        e = discord.Embed(color=color, description=desc)
+        e.add_field(name="Game", value=game_label, inline=True)
+        e.add_field(name="Status", value=status, inline=True)
+        e.add_field(name="By", value=interaction.user.mention, inline=True)
+        _brand_embed(e)
+        await interaction.response.edit_message(embed=e, view=None)
+
+        # Log to finance log
+        log_e = discord.Embed(
+            color=color,
+            description=f"## {'🔒' if self.action == 'lock' else '🔓'} GAME {'LOCKED' if self.action == 'lock' else 'UNLOCKED'}"
+        )
+        log_e.add_field(name="Game",   value=game_label,              inline=True)
+        log_e.add_field(name="Status", value=status,                  inline=True)
+        log_e.add_field(name="Staff",  value=interaction.user.mention, inline=True)
+        log_e.set_footer(text=now_ts())
+        await send_finance_log(log_e)
+
+
+class GameLockView(discord.ui.View):
+    def __init__(self, action: str):
+        super().__init__(timeout=60)
+        self.add_item(GameLockSelect(action))
+
+
+@bot.tree.command(name="lock", description="[Staff] Lock a game so only staff can play it.")
+async def cmd_lock(interaction: discord.Interaction):
+    allowed = {OWNER_ROLE_NAME, ADMIN_ROLE_NAME, STAFF_ROLE_NAME}
+    if not any(r.name in allowed for r in interaction.user.roles):
+        await interaction.response.send_message("❌ You don't have permission to lock games.", ephemeral=True)
+        return
+
+    unlocked = [lbl for lbl, key in ALL_GAMES.items() if key not in LOCKED_GAMES]
+    locked   = [lbl for lbl, key in ALL_GAMES.items() if key in LOCKED_GAMES]
+
+    e = discord.Embed(
+        color=0xFF4444,
+        description=(
+            f"🔒 **Lock a Game**\n\n"
+            f"Select a game from the dropdown below to lock it.\n"
+            f"Locked games can only be played by **{OWNER_ROLE_NAME}**, **{ADMIN_ROLE_NAME}**, and **{STAFF_ROLE_NAME}**.\n\n"
+            f"**Currently locked:** {', '.join(locked) if locked else 'None'}\n"
+            f"**Available to lock:** {len(unlocked)} game(s)"
+        )
+    )
+    _brand_embed(e)
+
+    if not unlocked:
+        await interaction.response.send_message("✅ All games are already locked.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(embed=e, view=GameLockView("lock"), ephemeral=True)
+
+
+@bot.tree.command(name="unlock", description="[Staff] Unlock a locked game so everyone can play.")
+async def cmd_unlock(interaction: discord.Interaction):
+    allowed = {OWNER_ROLE_NAME, ADMIN_ROLE_NAME, STAFF_ROLE_NAME}
+    if not any(r.name in allowed for r in interaction.user.roles):
+        await interaction.response.send_message("❌ You don't have permission to unlock games.", ephemeral=True)
+        return
+
+    if not LOCKED_GAMES:
+        await interaction.response.send_message("✅ No games are currently locked.", ephemeral=True)
+        return
+
+    locked = [lbl for lbl, key in ALL_GAMES.items() if key in LOCKED_GAMES]
+
+    e = discord.Embed(
+        color=0x57F287,
+        description=(
+            f"🔓 **Unlock a Game**\n\n"
+            f"Select a game from the dropdown to unlock it for all members.\n\n"
+            f"**Currently locked:** {', '.join(locked)}"
+        )
+    )
+    _brand_embed(e)
+    await interaction.response.send_message(embed=e, view=GameLockView("unlock"), ephemeral=True)
+
+
 SABPOT_OWNER_ID = 1392765245532930068
 
 @bot.tree.command(name="disable", description="Shut down the bot.")
