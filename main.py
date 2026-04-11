@@ -861,6 +861,8 @@ async def record_game(conn, user_id: int, won: bool, bet: int, payout: int, game
         if won:
             await update_quest_progress(conn, user_id, "win",    game, 1, bet)
             await update_quest_progress(conn, user_id, "streak", game, 1, bet)
+        else:
+            await reset_streak_quest(conn, user_id)  # reset streak quest progress on any loss
     except Exception as _qe:
         print(f"[QUESTS] progress error: {_qe}")
 
@@ -2555,6 +2557,7 @@ async def cmd_tip(interaction: discord.Interaction, user: discord.Member, amount
             )
             await log_transaction(conn, interaction.user.id, "tip_sent", -amt, f"to {user.id}")
             await log_transaction(conn, user.id, "tip_recv", amt, f"from {interaction.user.id}")
+            await add_wager_req(conn, user.id, amt, "tip_recv")  # recipient must wager tip before withdrawing
             # Quest: tip someone
             try:
                 await update_quest_progress(conn, interaction.user.id, "tip", "any", 1, bet=0)
@@ -6489,6 +6492,10 @@ class HiloView(BaseGameView):
         return embed
 
     # ── Bet deduction ─────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════
+# END OF PART 1 — paste Part 2 directly below this line
+# ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════
 # END OF PART 1 — paste Part 2 directly below this line
