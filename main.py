@@ -1644,7 +1644,7 @@ async def _setup_guild_channels(guild: discord.Guild):
             ("⭐｜rain",            "Rain rewards.",             chat_ow(),      False),
             ("🏷️｜promo-codes",    "Promo codes.",              read_only_ow(), False),
             ("💜｜boost-rewards",  "Server boost rewards.",     read_only_ow(), False),
-            ("📤｜withdrawals",    "Withdrawal requests.",      chat_ow(),      False),
+            ("📤｜stock-withdrawal",  "Stock withdrawal requests.", chat_ow(),      False),
         ]),
         ("💬 Chat", staff_full(owner_role, manager_role), [
             ("🗨️｜general", "General chat.",    chat_ow(),  False),
@@ -4735,48 +4735,45 @@ class RouletteView(BaseGameView):
         spin_hash = hashlib.sha256(seed.encode()).hexdigest()
 
         # ── Spinning bar animation ──────────────────────────────
-        # Bar is 10 slots wide. A "pointer" slides across showing
-        # the color tiles. Slows down near the end like a real wheel.
+        # Bar is exactly 10 slots wide. The pointer (⬇️) replaces
+        # one slot in the top row so it always stays within the bar.
         BAR_LENGTH  = 10
         SLOT_COLORS = ["🟥", "⬛", "🟨", "🟥", "⬛", "🟨", "🟥", "⬛", "🟨", "🟥"]
         POINTER     = "⬆️"
+
+        def make_bar(pos: int) -> str:
+            top    = " ".join(SLOT_COLORS)
+            # Full-width space (　) as invisible placeholder so arrow aligns under correct slot
+            bottom = " ".join(POINTER if i == pos else "　" for i in range(BAR_LENGTH))
+            return f"{top}\n{bottom}"
 
         msg = self._original_message
         try:
             await msg.edit(embed=discord.Embed(title="◉  ROULETTE  —  SPINNING", description="```\n  ◉ ◉ ◉ ◉ ◉  spinning...\n```", color=C_GOLD), view=None)
         except Exception as e:
-
             print(f"[ERROR] {type(e).__name__}: {e}")
             pass
 
-        # Fast phase: 12 frames, 0.12s each
-        for frame in range(12):
-            pos    = frame % BAR_LENGTH
-            bar    = " ".join(SLOT_COLORS)
-            spacer = "   " * pos + POINTER
+        # Fast phase: 10 frames, 0.12s each — pointer sweeps all 10 slots once
+        for frame in range(10):
+            pos = frame % BAR_LENGTH
             e = discord.Embed(title="◉  SPINNING...", color=C_GOLD)
-            e.add_field(name="\​", value=f"{bar}\
-{spacer}", inline=False)
+            e.add_field(name="\​", value=make_bar(pos), inline=False)
             try:
                 await msg.edit(embed=e)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
             await asyncio.sleep(0.12)
 
-        # Slow-down phase: 6 frames, increasing delay
-        for i, delay in enumerate([0.2, 0.3, 0.4, 0.5, 0.6, 0.7]):
-            pos    = (12 + i) % BAR_LENGTH
-            bar    = " ".join(SLOT_COLORS)
-            spacer = "   " * pos + POINTER
+        # Slow-down phase: final slot lands, 3 frames with increasing delay
+        for i, delay in enumerate([0.35, 0.55, 0.75]):
+            pos = (10 + i) % BAR_LENGTH
             e = discord.Embed(title="◉  SLOWING...", color=C_GOLD)
-            e.add_field(name="\​", value=f"{bar}\
-{spacer}", inline=False)
+            e.add_field(name="\​", value=make_bar(pos), inline=False)
             try:
                 await msg.edit(embed=e)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
             await asyncio.sleep(delay)
@@ -15313,116 +15310,141 @@ async def cmd_createcasebattle(interaction: discord.Interaction):
 # ACHIEVEMENTSS  (cosmetic only — no gem rewards)
 # ═══════════════════════════════════════════════════════════
 
+# ACHIEVEMENTS  (cosmetic only — no gem rewards)
+# ═══════════════════════════════════════════════════════════
+# Economy reference (100 internal units = 1 gem):
+#   10M gems  = 1_000_000_000 units  (Bronze rank threshold)
+#   50M gems  = 5_000_000_000 units
+#   200M gems = 20_000_000_000 units
+#   600M gems = 60_000_000_000 units
+#   1.5B gems = 150_000_000_000 units
+#   3B gems   = 300_000_000_000 units
+#   5B gems   = 500_000_000_000 units
+#   10B gems  = 1_000_000_000_000 units
+#   15B gems  = 1_500_000_000_000 units
+
 ACHIEVEMENTS = [
     # ══════════════════════════════════════════════════════
     # GAMBLING — general
     # ══════════════════════════════════════════════════════
-    {"id":"first_blood",    "emoji":"🩸", "name":"First Blood",        "desc":"Win your first game",                    "cat":"gambling", "check": lambda r,x: r["wins"] >= 1},
-    {"id":"ten_wins",       "emoji":"🎯", "name":"Getting Warmed Up",  "desc":"Win 10 games",                          "cat":"gambling", "check": lambda r,x: r["wins"] >= 10},
-    {"id":"hundred_wins",   "emoji":"💯", "name":"Century Club",       "desc":"Win 100 games",                         "cat":"gambling", "check": lambda r,x: r["wins"] >= 100},
-    {"id":"thousand_wins",  "emoji":"🏅", "name":"Grinder",            "desc":"Win 1,000 games",                       "cat":"gambling", "check": lambda r,x: r["wins"] >= 1000},
-    {"id":"tenk_wins",      "emoji":"🌠", "name":"Veteran",            "desc":"Win 10,000 games",                      "cat":"gambling", "check": lambda r,x: r["wins"] >= 10000},
-    {"id":"streak_3",       "emoji":"🔥", "name":"On Fire",            "desc":"Reach a 3-game win streak",             "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 3},
-    {"id":"streak_10",      "emoji":"⚡", "name":"Unstoppable",        "desc":"Reach a 10-game win streak",            "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 10},
-    {"id":"streak_25",      "emoji":"🌩️","name":"Lightning Rod",       "desc":"Reach a 25-game win streak",            "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 25},
-    {"id":"streak_50",      "emoji":"☄️", "name":"God Mode",           "desc":"Reach a 50-game win streak",            "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 50},
-    {"id":"played_100",     "emoji":"🎲", "name":"Warming Up",         "desc":"Play 100 games total",                  "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 100},
-    {"id":"played_500",     "emoji":"🎮", "name":"Addicted",           "desc":"Play 500 games total",                  "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 500},
-    {"id":"played_5000",    "emoji":"🕹️","name":"No Life",             "desc":"Play 5,000 games total",                "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 5000},
-    {"id":"played_25000",   "emoji":"💀", "name":"Needs Help",         "desc":"Play 25,000 games total",               "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 25000},
-    {"id":"comeback",       "emoji":"🔄", "name":"Comeback Kid",       "desc":"Win after losing 5 in a row",           "cat":"gambling", "check": lambda r,x: x.get("had_comeback", False)},
-    # ── LOSS-BASED / dark humor ─────────────────────────
-    {"id":"first_loss",     "emoji":"😬", "name":"Welcome to Rbxflip",   "desc":"Lose your first game",                  "cat":"gambling", "check": lambda r,x: r["losses"] >= 1},
-    {"id":"lose_50",        "emoji":"📉", "name":"Rough Patch",        "desc":"Lose 50 games total",                   "cat":"gambling", "check": lambda r,x: r["losses"] >= 50},
-    {"id":"lose_500",       "emoji":"💸", "name":"Chronic Loser",      "desc":"Lose 500 games total",                  "cat":"gambling", "check": lambda r,x: r["losses"] >= 500},
-    {"id":"lose_streak_5",  "emoji":"🥶", "name":"Ice Cold",           "desc":"Hit a 5-game loss streak",              "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 5},
-    {"id":"lose_streak_10", "emoji":"💔", "name":"Cursed",             "desc":"Hit a 10-game loss streak",             "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 10},
-    {"id":"lose_streak_20", "emoji":"☠️", "name":"Cooked",             "desc":"Hit a 20-game loss streak",             "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 20},
-    {"id":"broke",          "emoji":"🪙", "name":"Going Broke",        "desc":"Hit 0 balance",                         "cat":"gambling", "check": lambda r,x: x.get("hit_zero", False)},
+    {"id":"first_blood",    "emoji":"🩸", "name":"First Blood",        "desc":"Win your first game",                        "cat":"gambling", "check": lambda r,x: r["wins"] >= 1},
+    {"id":"ten_wins",       "emoji":"🎯", "name":"Getting Warmed Up",  "desc":"Win 10 games",                               "cat":"gambling", "check": lambda r,x: r["wins"] >= 10},
+    {"id":"hundred_wins",   "emoji":"💯", "name":"Century Club",       "desc":"Win 100 games",                              "cat":"gambling", "check": lambda r,x: r["wins"] >= 100},
+    {"id":"thousand_wins",  "emoji":"🏅", "name":"Grinder",            "desc":"Win 500 games",                            "cat":"gambling", "check": lambda r,x: r["wins"] >= 500},
+    {"id":"tenk_wins",      "emoji":"🌠", "name":"Veteran",            "desc":"Win 3,000 games",                           "cat":"gambling", "check": lambda r,x: r["wins"] >= 3_000},
+    {"id":"100k_wins",      "emoji":"🔱", "name":"Immortal",           "desc":"Win 15,000 games",                          "cat":"gambling", "check": lambda r,x: r["wins"] >= 15_000},
+    {"id":"streak_5",       "emoji":"🔥", "name":"On Fire",            "desc":"Reach a 5-game win streak",                  "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 5},
+    {"id":"streak_15",      "emoji":"⚡", "name":"Unstoppable",        "desc":"Reach an 8-game win streak",                 "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 8},
+    {"id":"streak_30",      "emoji":"🌩️","name":"Lightning Rod",       "desc":"Reach a 20-game win streak",                 "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 20},
+    {"id":"streak_50",      "emoji":"☄️", "name":"God Mode",           "desc":"Reach a 35-game win streak",                 "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 35},
+    {"id":"streak_100",     "emoji":"👁️", "name":"Unkillable",         "desc":"Reach a 60-game win streak",                "cat":"gambling", "check": lambda r,x: r["max_streak"] >= 60},
+    {"id":"played_500",     "emoji":"🎲", "name":"Warming Up",         "desc":"Play 500 games total",                       "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 500},
+    {"id":"played_5000",    "emoji":"🎮", "name":"Addicted",           "desc":"Play 2,000 games total",                     "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 2_000},
+    {"id":"played_25000",   "emoji":"🕹️","name":"No Life",             "desc":"Play 10,000 games total",                    "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 10_000},
+    {"id":"played_100000",  "emoji":"💀", "name":"Needs Help",         "desc":"Play 40,000 games total",                   "cat":"gambling", "check": lambda r,x: (r["wins"]+r["losses"]) >= 40_000},
+    {"id":"comeback",       "emoji":"🔄", "name":"Comeback Kid",       "desc":"Win after losing 10 in a row",               "cat":"gambling", "check": lambda r,x: x.get("had_comeback", False)},
+    # ── LOSS-BASED ──────────────────────────────────────
+    {"id":"first_loss",     "emoji":"😬", "name":"Welcome to Sabpot",  "desc":"Lose your first game",                       "cat":"gambling", "check": lambda r,x: r["losses"] >= 1},
+    {"id":"lose_500",       "emoji":"📉", "name":"Rough Patch",        "desc":"Lose 250 games total",                       "cat":"gambling", "check": lambda r,x: r["losses"] >= 250},
+    {"id":"lose_5000",      "emoji":"💸", "name":"Chronic Loser",      "desc":"Lose 2,000 games total",                     "cat":"gambling", "check": lambda r,x: r["losses"] >= 2_000},
+    {"id":"lose_streak_10", "emoji":"🥶", "name":"Ice Cold",           "desc":"Hit a 10-game loss streak",                  "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 10},
+    {"id":"lose_streak_20", "emoji":"💔", "name":"Cursed",             "desc":"Hit a 15-game loss streak",                  "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 15},
+    {"id":"lose_streak_50", "emoji":"☠️", "name":"Cooked",             "desc":"Hit a 30-game loss streak",                  "cat":"gambling", "check": lambda r,x: x.get("worst_streak",0) >= 30},
+    {"id":"broke",          "emoji":"🪙", "name":"Going Broke",        "desc":"Hit 0 balance",                              "cat":"gambling", "check": lambda r,x: x.get("hit_zero", False)},
     # ══════════════════════════════════════════════════════
     # GAME-SPECIFIC — Coinflip
     # ══════════════════════════════════════════════════════
-    {"id":"cf_win_1",       "emoji":"🪙", "name":"Heads or Tails",     "desc":"Win a coinflip",                        "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 1},
-    {"id":"cf_win_50",      "emoji":"🌀", "name":"Gem Master",        "desc":"Win 50 coinflips",                      "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 50},
-    {"id":"cf_win_500",     "emoji":"🏧", "name":"Flip God",           "desc":"Win 500 coinflips",                     "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 500},
+    {"id":"cf_win_1",       "emoji":"🪙", "name":"Heads or Tails",     "desc":"Win a coinflip",                             "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 1},
+    {"id":"cf_win_250",     "emoji":"🌀", "name":"Flip Addict",        "desc":"Win 100 coinflips",                          "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 100},
+    {"id":"cf_win_2500",    "emoji":"🏧", "name":"Flip God",           "desc":"Win 750 coinflips",                        "cat":"games",    "check": lambda r,x: x.get("cf_wins",0) >= 750},
     # ── Dice ────────────────────────────────────────────
-    {"id":"dice_win_1",     "emoji":"🎲", "name":"Lucky Roll",         "desc":"Win a dice game",                       "cat":"games",    "check": lambda r,x: x.get("dice_wins",0) >= 1},
-    {"id":"dice_win_100",   "emoji":"🎯", "name":"Dice Demon",         "desc":"Win 100 dice games",                    "cat":"games",    "check": lambda r,x: x.get("dice_wins",0) >= 100},
+    {"id":"dice_win_1",     "emoji":"🎲", "name":"Lucky Roll",         "desc":"Win a dice game",                            "cat":"games",    "check": lambda r,x: x.get("dice_wins",0) >= 1},
+    {"id":"dice_win_500",   "emoji":"🎯", "name":"Dice Demon",         "desc":"Win 200 dice games",                         "cat":"games",    "check": lambda r,x: x.get("dice_wins",0) >= 200},
+    {"id":"dice_win_5000",  "emoji":"🎳", "name":"Dice God",           "desc":"Win 1,500 dice games",                       "cat":"games",    "check": lambda r,x: x.get("dice_wins",0) >= 1_500},
     # ── Blackjack ───────────────────────────────────────
-    {"id":"bj_win_1",       "emoji":"♠️", "name":"21",                 "desc":"Win a blackjack hand",                  "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 1},
-    {"id":"bj_win_50",      "emoji":"🃏", "name":"Card Shark",         "desc":"Win 50 blackjack hands",                "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 50},
-    {"id":"bj_win_500",     "emoji":"🎴", "name":"House Beater",       "desc":"Win 500 blackjack hands",               "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 500},
+    {"id":"bj_win_1",       "emoji":"♠️", "name":"21",                 "desc":"Win a blackjack hand",                       "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 1},
+    {"id":"bj_win_250",     "emoji":"🃏", "name":"Card Shark",         "desc":"Win 100 blackjack hands",                    "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 100},
+    {"id":"bj_win_2500",    "emoji":"🎴", "name":"House Beater",       "desc":"Win 750 blackjack hands",                  "cat":"games",    "check": lambda r,x: x.get("bj_wins",0) >= 750},
     # ── Roulette ────────────────────────────────────────
-    {"id":"rlt_win_1",      "emoji":"◉",  "name":"Spin & Win",         "desc":"Win a roulette spin",                   "cat":"games",    "check": lambda r,x: x.get("rlt_wins",0) >= 1},
-    {"id":"rlt_win_50",     "emoji":"🎡", "name":"Wheel Wizard",       "desc":"Win 50 roulette spins",                 "cat":"games",    "check": lambda r,x: x.get("rlt_wins",0) >= 50},
+    {"id":"rlt_win_1",      "emoji":"◉",  "name":"Spin & Win",         "desc":"Win a roulette spin",                        "cat":"games",    "check": lambda r,x: x.get("rlt_wins",0) >= 1},
+    {"id":"rlt_win_250",    "emoji":"🎡", "name":"Wheel Wizard",       "desc":"Win 100 roulette spins",                     "cat":"games",    "check": lambda r,x: x.get("rlt_wins",0) >= 100},
+    {"id":"rlt_win_2500",   "emoji":"🌐", "name":"Roulette King",      "desc":"Win 750 roulette spins",                   "cat":"games",    "check": lambda r,x: x.get("rlt_wins",0) >= 750},
     # ── Mines ───────────────────────────────────────────
-    {"id":"mines_clear_1",  "emoji":"💣", "name":"Defused",            "desc":"Clear a mines board",                   "cat":"games",    "check": lambda r,x: x.get("mines_clears",0) >= 1},
-    {"id":"mines_clear_25", "emoji":"🔰", "name":"Bomb Squad",         "desc":"Clear 25 mines boards",                 "cat":"games",    "check": lambda r,x: x.get("mines_clears",0) >= 25},
-    {"id":"mines_cashout",  "emoji":"💰", "name":"Cash Out King",      "desc":"Cash out of mines 50 times",            "cat":"games",    "check": lambda r,x: x.get("mines_cashouts",0) >= 50},
+    {"id":"mines_clear_1",  "emoji":"💣", "name":"Defused",            "desc":"Clear a mines board",                        "cat":"games",    "check": lambda r,x: x.get("mines_clears",0) >= 1},
+    {"id":"mines_clear_100","emoji":"🔰", "name":"Bomb Squad",         "desc":"Clear 50 mines boards",                     "cat":"games",    "check": lambda r,x: x.get("mines_clears",0) >= 50},
+    {"id":"mines_clear_1000","emoji":"💥","name":"Minefield Walker",   "desc":"Clear 400 mines boards",                   "cat":"games",    "check": lambda r,x: x.get("mines_clears",0) >= 400},
+    {"id":"mines_cashout",  "emoji":"💰", "name":"Cash Out King",      "desc":"Cash out of mines 100 times",                "cat":"games",    "check": lambda r,x: x.get("mines_cashouts",0) >= 100},
     # ── Towers ──────────────────────────────────────────
-    {"id":"towers_clear_1", "emoji":"🗼", "name":"Tower Climber",      "desc":"Clear a towers board",                  "cat":"games",    "check": lambda r,x: x.get("towers_clears",0) >= 1},
-    {"id":"towers_clear_25","emoji":"🏔️","name":"Summit Reached",      "desc":"Clear 25 towers boards",               "cat":"games",    "check": lambda r,x: x.get("towers_clears",0) >= 25},
+    {"id":"towers_clear_1", "emoji":"🗼", "name":"Tower Climber",      "desc":"Clear a towers board",                       "cat":"games",    "check": lambda r,x: x.get("towers_clears",0) >= 1},
+    {"id":"towers_clear_100","emoji":"🏔️","name":"Summit Reached",     "desc":"Clear 50 towers boards",                    "cat":"games",    "check": lambda r,x: x.get("towers_clears",0) >= 50},
+    {"id":"towers_clear_1000","emoji":"🌋","name":"Untouchable",        "desc":"Clear 400 towers boards",                  "cat":"games",    "check": lambda r,x: x.get("towers_clears",0) >= 400},
     # ── HiLo ────────────────────────────────────────────
-    {"id":"hilo_cashout_1", "emoji":"📈", "name":"Calculated",         "desc":"Cash out of HiLo with a profit",        "cat":"games",    "check": lambda r,x: x.get("hilo_cashouts",0) >= 1},
-    {"id":"hilo_cashout_50","emoji":"🔮", "name":"Oracle",             "desc":"Cash out of HiLo 50 times",             "cat":"games",    "check": lambda r,x: x.get("hilo_cashouts",0) >= 50},
+    {"id":"hilo_cashout_1", "emoji":"📈", "name":"Calculated",         "desc":"Cash out of HiLo with a profit",             "cat":"games",    "check": lambda r,x: x.get("hilo_cashouts",0) >= 1},
+    {"id":"hilo_cashout_250","emoji":"🔮", "name":"Oracle",            "desc":"Cash out of HiLo 100 times",                 "cat":"games",    "check": lambda r,x: x.get("hilo_cashouts",0) >= 100},
     # ── RPS ─────────────────────────────────────────────
-    {"id":"rps_win_1",      "emoji":"✊", "name":"Challenger",         "desc":"Win an RPS game",                       "cat":"games",    "check": lambda r,x: x.get("rps_wins",0) >= 1},
-    {"id":"rps_win_100",    "emoji":"✌️", "name":"RPS Legend",         "desc":"Win 100 RPS games",                     "cat":"games",    "check": lambda r,x: x.get("rps_wins",0) >= 100},
+    {"id":"rps_win_1",      "emoji":"✊", "name":"Challenger",         "desc":"Win an RPS game",                            "cat":"games",    "check": lambda r,x: x.get("rps_wins",0) >= 1},
+    {"id":"rps_win_500",    "emoji":"✌️", "name":"RPS Legend",         "desc":"Win 200 RPS games",                          "cat":"games",    "check": lambda r,x: x.get("rps_wins",0) >= 200},
     # ── War ─────────────────────────────────────────────
-    {"id":"war_win_1",      "emoji":"⚔️","name":"Warrior",             "desc":"Win a war game",                        "cat":"games",    "check": lambda r,x: x.get("war_wins",0) >= 1},
-    {"id":"war_win_100",    "emoji":"🛡️","name":"General",             "desc":"Win 100 war games",                     "cat":"games",    "check": lambda r,x: x.get("war_wins",0) >= 100},
+    {"id":"war_win_1",      "emoji":"⚔️","name":"Warrior",             "desc":"Win a war game",                             "cat":"games",    "check": lambda r,x: x.get("war_wins",0) >= 1},
+    {"id":"war_win_500",    "emoji":"🛡️","name":"General",             "desc":"Win 200 war games",                          "cat":"games",    "check": lambda r,x: x.get("war_wins",0) >= 200},
     # ── Baccarat ────────────────────────────────────────
-    {"id":"baccarat_win_1", "emoji":"🎩", "name":"High Society",       "desc":"Win a baccarat game",                   "cat":"games",    "check": lambda r,x: x.get("baccarat_wins",0) >= 1},
-    {"id":"baccarat_win_50","emoji":"🥂", "name":"James Bond",         "desc":"Win 50 baccarat games",                 "cat":"games",    "check": lambda r,x: x.get("baccarat_wins",0) >= 50},
+    {"id":"baccarat_win_1", "emoji":"🎩", "name":"High Society",       "desc":"Win a baccarat game",                        "cat":"games",    "check": lambda r,x: x.get("baccarat_wins",0) >= 1},
+    {"id":"baccarat_win_250","emoji":"🥂", "name":"James Bond",        "desc":"Win 100 baccarat games",                     "cat":"games",    "check": lambda r,x: x.get("baccarat_wins",0) >= 100},
     # ── Scratch ─────────────────────────────────────────
-    {"id":"scratch_win_1",  "emoji":"🎫", "name":"Lucky Ticket",       "desc":"Win a scratch card",                    "cat":"games",    "check": lambda r,x: x.get("scratch_wins",0) >= 1},
-    {"id":"scratch_win_25", "emoji":"🎰", "name":"Scratcher",          "desc":"Win 25 scratch cards",                  "cat":"games",    "check": lambda r,x: x.get("scratch_wins",0) >= 25},
+    {"id":"scratch_win_1",  "emoji":"🎫", "name":"Lucky Ticket",       "desc":"Win a scratch card",                         "cat":"games",    "check": lambda r,x: x.get("scratch_wins",0) >= 1},
+    {"id":"scratch_win_100","emoji":"🎰", "name":"Scratcher",          "desc":"Win 50 scratch cards",                      "cat":"games",    "check": lambda r,x: x.get("scratch_wins",0) >= 50},
     # ── Horse Race ──────────────────────────────────────
-    {"id":"horse_win_1",    "emoji":"🏇", "name":"Pick a Winner",      "desc":"Win a horse race bet",                  "cat":"games",    "check": lambda r,x: x.get("horse_wins",0) >= 1},
-    {"id":"horse_win_50",   "emoji":"🏆", "name":"Jockey",             "desc":"Win 50 horse race bets",                "cat":"games",    "check": lambda r,x: x.get("horse_wins",0) >= 50},
+    {"id":"horse_win_1",    "emoji":"🏇", "name":"Pick a Winner",      "desc":"Win a horse race bet",                       "cat":"games",    "check": lambda r,x: x.get("horse_wins",0) >= 1},
+    {"id":"horse_win_250",  "emoji":"🏆", "name":"Jockey",             "desc":"Win 100 horse race bets",                    "cat":"games",    "check": lambda r,x: x.get("horse_wins",0) >= 100},
     # ── Balloon ─────────────────────────────────────────
-    {"id":"balloon_pop_1",  "emoji":"🎈", "name":"Pop!",               "desc":"Pop a balloon",                         "cat":"games",    "check": lambda r,x: x.get("balloon_pops",0) >= 1},
-    {"id":"balloon_pop_50", "emoji":"💥", "name":"Reckless",           "desc":"Pop 50 balloons",                       "cat":"games",    "check": lambda r,x: x.get("balloon_pops",0) >= 50},
-    {"id":"balloon_cashout","emoji":"🪂", "name":"Know When to Stop",  "desc":"Cash out of balloon 25 times",          "cat":"games",    "check": lambda r,x: x.get("balloon_cashouts",0) >= 25},
+    {"id":"balloon_pop_1",  "emoji":"🎈", "name":"Pop!",               "desc":"Pop a balloon",                              "cat":"games",    "check": lambda r,x: x.get("balloon_pops",0) >= 1},
+    {"id":"balloon_pop_250","emoji":"💥", "name":"Reckless",           "desc":"Pop 100 balloons",                           "cat":"games",    "check": lambda r,x: x.get("balloon_pops",0) >= 100},
+    {"id":"balloon_cashout","emoji":"🪂", "name":"Know When to Stop",  "desc":"Cash out of balloon 50 times",              "cat":"games",    "check": lambda r,x: x.get("balloon_cashouts",0) >= 50},
     # ── Upgrader ────────────────────────────────────────
-    {"id":"upgrader_win_1", "emoji":"⬆️","name":"Upgraded",            "desc":"Win an upgrader bet",                   "cat":"games",    "check": lambda r,x: x.get("upgrader_wins",0) >= 1},
-    {"id":"upgrader_win_25","emoji":"🚀", "name":"To the Moon",        "desc":"Win 25 upgrader bets",                  "cat":"games",    "check": lambda r,x: x.get("upgrader_wins",0) >= 25},
+    {"id":"upgrader_win_1", "emoji":"⬆️","name":"Upgraded",            "desc":"Win an upgrader bet",                        "cat":"games",    "check": lambda r,x: x.get("upgrader_wins",0) >= 1},
+    {"id":"upgrader_win_100","emoji":"🚀","name":"To the Moon",        "desc":"Win 50 upgrader bets",                      "cat":"games",    "check": lambda r,x: x.get("upgrader_wins",0) >= 50},
     # ── Color Dice ──────────────────────────────────────
-    {"id":"cdice_win_1",    "emoji":"🎨", "name":"Color Me Lucky",     "desc":"Win a color dice game",                 "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 1},
-    {"id":"cdice_win_50",   "emoji":"🌈", "name":"Chromatic",          "desc":"Win 50 color dice games",               "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 50},
+    {"id":"cdice_win_1",    "emoji":"🎨", "name":"Color Me Lucky",     "desc":"Win a color dice game",                      "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 1},
+    {"id":"cdice_win_250",  "emoji":"🌈", "name":"Chromatic",          "desc":"Win 100 color dice games",                   "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 100},
     # ══════════════════════════════════════════════════════
-    # ECONOMY
+    # ECONOMY — thresholds in internal units (100 = 1 gem)
     # ══════════════════════════════════════════════════════
-    {"id":"wager_1m",       "emoji":"💸", "name":"Getting Started",    "desc":"Wager 100 gems total",                   "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_000_000},
-    {"id":"wager_100m",     "emoji":"💰", "name":"High Roller",        "desc":"Wager 1,000 gems total",                 "cat":"economy",  "check": lambda r,x: r["wagered"] >= 100_000_000},
-    {"id":"wager_1b",       "emoji":"🏦", "name":"Whale",              "desc":"Wager 5,000 gems total",                 "cat":"economy",  "check": lambda r,x: r["wagered"] >= 500_000_000},
-    {"id":"wager_10b",      "emoji":"🐋", "name":"Mega Whale",         "desc":"Wager 25,000 gems total",                "cat":"economy",  "check": lambda r,x: r["wagered"] >= 2_500_000_000},
-    {"id":"wager_100b",     "emoji":"🌊", "name":"Ocean",              "desc":"Wager 100,000 gems total",               "cat":"economy",  "check": lambda r,x: r["wagered"] >= 10_000_000_000},
-    {"id":"balance_10m",    "emoji":"💎", "name":"Stacking Up",        "desc":"Hold 500 gems at once",                  "cat":"economy",  "check": lambda r,x: r["balance"] >= 50_000},
-    {"id":"balance_500m",   "emoji":"👑", "name":"Rich",               "desc":"Hold 2,500 gems at once",                "cat":"economy",  "check": lambda r,x: r["balance"] >= 250_000},
-    {"id":"balance_5b",     "emoji":"🌟", "name":"Filthy Rich",        "desc":"Hold 10,000 gems at once",               "cat":"economy",  "check": lambda r,x: r["balance"] >= 1_000_000},
-    {"id":"balance_50b",    "emoji":"🏰", "name":"Empire",             "desc":"Hold 50,000 gems at once",               "cat":"economy",  "check": lambda r,x: r["balance"] >= 5_000_000},
-    {"id":"daily_7",        "emoji":"📅", "name":"Weekly",             "desc":"Claim daily 7 times",                   "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 7},
-    {"id":"daily_30",       "emoji":"🗓️","name":"Monthly",             "desc":"Claim daily 30 times",                  "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 30},
-    {"id":"daily_365",      "emoji":"🎂", "name":"Loyal",              "desc":"Claim daily 365 times",                 "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 365},
-    {"id":"promo_redeem",   "emoji":"🎟️","name":"Code Breaker",        "desc":"Redeem a promo code",                   "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 1},
-    {"id":"promo_5",        "emoji":"🗝️","name":"Hunter",              "desc":"Redeem 5 promo codes",                  "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 5},
-    {"id":"big_single_win", "emoji":"💣", "name":"One Shot",           "desc":"Win 5,000+ gems in a single game",       "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 500_000},
-    {"id":"godroll",        "emoji":"🌌", "name":"God Roll",           "desc":"Win 20,000+ gems in a single game",      "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 2_000_000},
+    {"id":"wager_10m",      "emoji":"💸", "name":"Getting Started",    "desc":"Wager 10M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_000_000_000},
+    {"id":"wager_50m",      "emoji":"💰", "name":"Warming Up",         "desc":"Wager 25M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 2_500_000_000},
+    {"id":"wager_200m",     "emoji":"🏦", "name":"High Roller",        "desc":"Wager 100M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 10_000_000_000},
+    {"id":"wager_600m",     "emoji":"🐋", "name":"Whale",              "desc":"Wager 300M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 30_000_000_000},
+    {"id":"wager_1b5",      "emoji":"🌊", "name":"Deep Water",         "desc":"Wager 700M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 70_000_000_000},
+    {"id":"wager_3b",       "emoji":"💎", "name":"Emerald",            "desc":"Wager 1.5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 150_000_000_000},
+    {"id":"wager_5b",       "emoji":"🎰", "name":"Degenerate",         "desc":"Wager 2.5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 250_000_000_000},
+    {"id":"wager_10b",      "emoji":"👑", "name":"Mega Whale",         "desc":"Wager 5B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 500_000_000_000},
+    {"id":"wager_15b",      "emoji":"🏴‍☠️","name":"Legend",             "desc":"Wager 8B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 800_000_000_000},
+    {"id":"balance_10m",    "emoji":"🔵", "name":"Stacking Up",        "desc":"Hold 10M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 1_000_000_000},
+    {"id":"balance_70m",    "emoji":"🟣", "name":"VIP Material",       "desc":"Hold 30M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 3_000_000_000},
+    {"id":"balance_500m",   "emoji":"💜", "name":"Rich",               "desc":"Hold 200M gems at once",                     "cat":"economy",  "check": lambda r,x: r["balance"] >= 20_000_000_000},
+    {"id":"balance_2b",     "emoji":"🌟", "name":"Filthy Rich",        "desc":"Hold 800M gems at once",                       "cat":"economy",  "check": lambda r,x: r["balance"] >= 80_000_000_000},
+    {"id":"balance_10b",    "emoji":"🏰", "name":"Empire",             "desc":"Hold 3B gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 300_000_000_000},
+    {"id":"daily_7",        "emoji":"📅", "name":"Weekly",             "desc":"Claim daily 7 times",                        "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 7},
+    {"id":"daily_30",       "emoji":"🗓️","name":"Monthly",             "desc":"Claim daily 30 times",                       "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 30},
+    {"id":"daily_365",      "emoji":"🎂", "name":"Loyal",              "desc":"Claim daily 365 times",                      "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 365},
+    {"id":"promo_redeem",   "emoji":"🎟️","name":"Code Breaker",        "desc":"Redeem a promo code",                        "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 1},
+    {"id":"promo_10",       "emoji":"🗝️","name":"Hunter",              "desc":"Redeem 10 promo codes",                      "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 10},
+    {"id":"big_single_win", "emoji":"💣", "name":"One Shot",           "desc":"Win 50M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 5_000_000_000},
+    {"id":"godroll",        "emoji":"🌌", "name":"God Roll",           "desc":"Win 200M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 20_000_000_000},
+    {"id":"sickroll",       "emoji":"🔴", "name":"Sick Roll",          "desc":"Win 500M+ gems in a single game",              "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 50_000_000_000},
     # ══════════════════════════════════════════════════════
     # SOCIAL
     # ══════════════════════════════════════════════════════
-    {"id":"tip_once",       "emoji":"🤝", "name":"Generous",           "desc":"Send a tip to someone",                 "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 1},
-    {"id":"tip_100m",       "emoji":"💝", "name":"Philanthropist",     "desc":"Send 500 gems in tips total",            "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 50_000},
-    {"id":"tip_1b",         "emoji":"🫂", "name":"Big Spender",        "desc":"Send 2,000 gems in tips total",          "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 200_000},
-    {"id":"tip_recv_1",     "emoji":"🎁", "name":"Blessed",            "desc":"Receive a tip",                         "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 1},
-    {"id":"tip_recv_1b",    "emoji":"🤑", "name":"Popular",            "desc":"Receive 2,000 gems in tips total",       "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 200_000},
-    {"id":"rain_catch",     "emoji":"🌧️","name":"Rain Dancer",         "desc":"Catch a rain drop",                     "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 1},
-    {"id":"rain_catch_10",  "emoji":"⛈️","name":"Storm Chaser",        "desc":"Catch 10 rain drops",                   "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 10},
-    {"id":"rain_catch_50",  "emoji":"🌊", "name":"Flood Survivor",     "desc":"Catch 50 rain drops",                   "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 50},
-    {"id":"cb_win",         "emoji":"⚔️","name":"Battle Tested",       "desc":"Win a case battle",                     "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 1},
-    {"id":"cb_win_10",      "emoji":"🏆", "name":"Battle Hardened",    "desc":"Win 10 case battles",                   "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 10},
-    {"id":"cb_win_50",      "emoji":"👹", "name":"Battle God",         "desc":"Win 50 case battles",                   "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 50},
+    {"id":"tip_once",       "emoji":"🤝", "name":"Generous",           "desc":"Send a tip to someone",                      "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 1},
+    {"id":"tip_50m",        "emoji":"💝", "name":"Philanthropist",     "desc":"Send 20M gems in tips total",                "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 2_000_000_000},
+    {"id":"tip_500m",       "emoji":"🫂", "name":"Big Spender",        "desc":"Send 150M gems in tips total",               "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 15_000_000_000},
+    {"id":"tip_recv_1",     "emoji":"🎁", "name":"Blessed",            "desc":"Receive a tip",                              "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 1},
+    {"id":"tip_recv_500m",  "emoji":"🤑", "name":"Popular",            "desc":"Receive 150M gems in tips total",            "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 15_000_000_000},
+    {"id":"rain_catch",     "emoji":"🌧️","name":"Rain Dancer",         "desc":"Catch a rain drop",                          "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 1},
+    {"id":"rain_catch_25",  "emoji":"⛈️","name":"Storm Chaser",        "desc":"Catch 10 rain drops",                        "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 10},
+    {"id":"rain_catch_100", "emoji":"🌊", "name":"Flood Survivor",     "desc":"Catch 40 rain drops",                       "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 40},
+    {"id":"cb_win",         "emoji":"⚔️","name":"Battle Tested",       "desc":"Win a case battle",                          "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 1},
+    {"id":"cb_win_25",      "emoji":"🏆", "name":"Battle Hardened",    "desc":"Win 10 case battles",                        "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 10},
+    {"id":"cb_win_100",     "emoji":"👹", "name":"Battle God",         "desc":"Win 40 case battles",                       "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 40},
 ]
 
 # ═══════════════════════════════════════════════════════════
