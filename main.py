@@ -307,8 +307,8 @@ LOGO_URL = os.getenv("LOGO_URL", "")  # Paste your Rbxflip logo URL here or set 
 # Upload your .webp GIFs to imgur.com → right-click → Copy Image Address → paste the i.imgur.com URL.
 # Set as Railway env vars (COINFLIP_HEADS_GIF / COINFLIP_TAILS_GIF) to override without editing code.
 # DO NOT use Discord CDN /attachments/ links — they expire and will not load in embeds.
-COINFLIP_HEADS_GIF    = os.getenv("COINFLIP_HEADS_GIF",    "https://i.imgur.com/PASTE_HEADS_HERE.webp")
-COINFLIP_TAILS_GIF    = os.getenv("COINFLIP_TAILS_GIF",    "https://i.imgur.com/PASTE_TAILS_HERE.webp")
+COINFLIP_HEADS_GIF    = os.getenv("COINFLIP_HEADS_GIF",    "https://i.imgur.com/hgH4kFf.gif")
+COINFLIP_TAILS_GIF    = os.getenv("COINFLIP_TAILS_GIF",    "https://i.imgur.com/tUmaoHl.gif")
 COINFLIP_SPINNING_GIF = os.getenv("COINFLIP_SPINNING_GIF", "")  # Optional spinning GIF while flipping
 
 
@@ -11671,30 +11671,8 @@ async def cmd_checkdb(interaction: discord.Interaction):
     embed.set_footer(text=now_ts())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="testadd", description="[Admin] Test addcoins (+100 to a user).")
-@app_commands.describe(user="Target user")
-@admin_only()
-async def cmd_testadd(interaction: discord.Interaction, user: discord.Member):
-    conn = await get_conn()
-    try:
-        await ensure_user(conn, user)
-        before = (await get_user(conn, user.id))["balance"]
-        await update_balance(conn, user.id, 100)
-        after  = (await get_user(conn, user.id))["balance"]
-    except Exception as e:
-        print(f"[ERROR] testadd: {type(e).__name__}: {e}")
-        await interaction.response.send_message("⚠️  Something went wrong — try again.", ephemeral=True)
-        return
-    finally:
-        await release_conn(conn)
 
-    success = after == before + 100
-    embed   = discord.Embed(title="🧪 AddGems Test", color=C_WIN if success else C_LOSS)
-    embed.add_field(name="User",   value=user.mention,                         inline=True)
-    embed.add_field(name="Before", value=str(before),                          inline=True)
-    embed.add_field(name="After",  value=str(after),                           inline=True)
-    embed.add_field(name="Result", value="✅ PASS" if success else "❌ FAIL",  inline=True)
-    embed.set_footer(text=now_ts())
+
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ═══════════════════════════════════════════════════════════
@@ -12959,154 +12937,6 @@ async def cmd_deleteviproom(interaction: discord.Interaction):
     await interaction.response.send_message("🗑️ Deleting your VIP room in 5 seconds...", ephemeral=True)
     await asyncio.sleep(5)
     await vip_delete_channel(channel, owner_id, f"Deleted by {interaction.user}")
-
-
-@bot.tree.command(name="addrole", description="Add a casino role to yourself or another user.")
-@app_commands.describe(
-    role="Which role to add",
-    user="User to give the role to (leave empty for yourself)"
-)
-@app_commands.choices(role=[
-    app_commands.Choice(name="Admin", value="Admin"),
-    app_commands.Choice(name="Moderator",  value="Moderator"),
-    app_commands.Choice(name="Member",           value="Member"),
-    app_commands.Choice(name="💎 VIP",            value="💎 VIP"),
-    app_commands.Choice(name="👑 Exclusive",      value="👑 Exclusive"),
-    app_commands.Choice(name="💎 Diamond Whale",  value="💎 Diamond Whale"),
-])
-async def cmd_addrole(interaction: discord.Interaction,
-                      role: str,
-                      user: Optional[discord.Member] = None):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ Server only.", ephemeral=True)
-        return
-
-    # Only admins/owner can give admin-tier roles; anyone can run to get Member
-    privileged_roles = {"Admin", "Moderator", "💎 VIP", "👑 Exclusive", "💎 Diamond Whale"}
-    caller = interaction.user
-    caller_is_admin = is_admin(caller) if isinstance(caller, discord.Member) else False
-    caller_is_owner = (interaction.guild.owner_id == caller.id)
-
-    if role in privileged_roles and not caller_is_admin and not caller_is_owner:
-        await interaction.response.send_message(
-            f"❌ Only admins can assign **{role}**.", ephemeral=True)
-        return
-
-    target = user or interaction.user
-    if not isinstance(target, discord.Member):
-        target = interaction.guild.get_member(target.id)
-    if not target:
-        await interaction.response.send_message("❌ Could not find that user in this server.", ephemeral=True)
-        return
-
-    discord_role = discord.utils.get(interaction.guild.roles, name=role)
-    if not discord_role:
-        # Try to create it on the fly
-        await ensure_rank_roles(interaction.guild)
-        await ensure_staff_role(interaction.guild)
-        await ensure_member_role(interaction.guild)
-        discord_role = discord.utils.get(interaction.guild.roles, name=role)
-
-    if not discord_role:
-        await interaction.response.send_message(
-            f"❌ Role **{role}** doesn't exist and couldn't be created. "
-            f"Make sure the bot has **Manage Roles** permission.", ephemeral=True)
-        return
-
-    if discord_role in target.roles:
-        await interaction.response.send_message(
-            f"❌ **{target.display_name}** already has the **{role}** role.", ephemeral=True)
-        return
-
-    # Check bot can actually assign this role (its top role must be above the target role)
-    bot_member = interaction.guild.me
-    if bot_member and bot_member.top_role.position <= discord_role.position:
-        await interaction.response.send_message(
-            f"❌ The bot's role is below **{role}** in the hierarchy. Ask the server owner to move "
-            f"the **{BOT_ROLE_NAME}** role above all casino roles.", ephemeral=True)
-        return
-
-    try:
-        await target.add_roles(discord_role, reason=f"/addrole by {caller.display_name}")
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ Bot lacks permission to assign this role.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="✅  ROLE ADDED",
-        description=f"Gave **{role}** to {target.mention}.",
-        color=C_WIN
-    )
-    _brand_embed(embed)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="removerole", description="Remove a casino role from yourself or another user.")
-@app_commands.describe(
-    role="Which role to remove",
-    user="User to remove the role from (leave empty for yourself)"
-)
-@app_commands.choices(role=[
-    app_commands.Choice(name="Admin", value="Admin"),
-    app_commands.Choice(name="Moderator",  value="Moderator"),
-    app_commands.Choice(name="Member",           value="Member"),
-    app_commands.Choice(name="💎 VIP",            value="💎 VIP"),
-    app_commands.Choice(name="👑 Exclusive",      value="👑 Exclusive"),
-    app_commands.Choice(name="💎 Diamond Whale",  value="💎 Diamond Whale"),
-])
-async def cmd_removerole(interaction: discord.Interaction,
-                         role: str,
-                         user: Optional[discord.Member] = None):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ Server only.", ephemeral=True)
-        return
-
-    privileged_roles = {"Admin", "Moderator", "💎 VIP", "👑 Exclusive", "💎 Diamond Whale"}
-    caller = interaction.user
-    caller_is_admin = is_admin(caller) if isinstance(caller, discord.Member) else False
-    caller_is_owner = (interaction.guild.owner_id == caller.id)
-
-    if role in privileged_roles and not caller_is_admin and not caller_is_owner:
-        await interaction.response.send_message(
-            f"❌ Only admins can remove **{role}**.", ephemeral=True)
-        return
-
-    target = user or interaction.user
-    if not isinstance(target, discord.Member):
-        target = interaction.guild.get_member(target.id)
-    if not target:
-        await interaction.response.send_message("❌ Could not find that user.", ephemeral=True)
-        return
-
-    discord_role = discord.utils.get(interaction.guild.roles, name=role)
-    if not discord_role or discord_role not in target.roles:
-        await interaction.response.send_message(
-            f"❌ **{target.display_name}** doesn't have the **{role}** role.", ephemeral=True)
-        return
-
-    bot_member = interaction.guild.me
-    if bot_member and bot_member.top_role.position <= discord_role.position:
-        await interaction.response.send_message(
-            f"❌ Bot's role is below **{role}** in the hierarchy.", ephemeral=True)
-        return
-
-    try:
-        await target.remove_roles(discord_role, reason=f"/removerole by {caller.display_name}")
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ Bot lacks permission to remove this role.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="✅  ROLE REMOVED",
-        description=f"Removed **{role}** from {target.mention}.",
-        color=C_LOSS
-    )
-    _brand_embed(embed)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="addviproom", description="Add a member to your private VIP room.")
