@@ -7107,16 +7107,16 @@ class TowersView(BaseGameView):
                         payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "towers")
                         await record_game(conn, self.creator.id, True, self.bet, payout)
                         await log_transaction(conn, self.creator.id, "towers_clear", net)
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, towers_clears) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET towers_clears = user_stats.towers_clears + 1""",
-                    str(self.creator.id)
-                )
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, towers_cashouts) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET towers_cashouts = user_stats.towers_cashouts + 1""",
-                    str(self.creator.id)
-                )
+                        await conn.execute(
+                            """INSERT INTO user_stats (user_id, towers_clears) VALUES ($1, 1)
+                               ON CONFLICT (user_id) DO UPDATE SET towers_clears = user_stats.towers_clears + 1""",
+                            str(self.creator.id)
+                        )
+                        await conn.execute(
+                            """INSERT INTO user_stats (user_id, towers_cashouts) VALUES ($1, 1)
+                               ON CONFLICT (user_id) DO UPDATE SET towers_cashouts = user_stats.towers_cashouts + 1""",
+                            str(self.creator.id)
+                        )
                         if interaction.guild:
                             row = await get_user(conn, self.creator.id)
                             member = interaction.guild.get_member(self.creator.id)
@@ -7215,11 +7215,11 @@ class TowersView(BaseGameView):
                     payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "towers")
                     await record_game(conn, self.creator.id, True, self.bet, payout)
                     await log_transaction(conn, self.creator.id, "towers_timeout_cashout", payout - self.bet)
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, towers_cashouts) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET towers_cashouts = user_stats.towers_cashouts + 1""",
-                    str(self.creator.id)
-                )
+                    await conn.execute(
+                        """INSERT INTO user_stats (user_id, towers_cashouts) VALUES ($1, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET towers_cashouts = user_stats.towers_cashouts + 1""",
+                        str(self.creator.id)
+                    )
                     desc = f"Game timed out — auto cashed out **{format_amount(payout)} 💎** ({self.rows_cleared} rows cleared)."
                 else:
                     await update_balance(conn, self.creator.id, self.bet)
@@ -7990,16 +7990,16 @@ class MinesView(BaseGameView):
                         payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "mines")
                         await record_game(conn, self.creator.id, True, self.bet, payout, game="mines")
                         await log_transaction(conn, self.creator.id, "mines_clear", payout - self.bet)
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, mines_clears) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET mines_clears = user_stats.mines_clears + 1""",
-                    str(self.creator.id)
-                )
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, mines_cashouts) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET mines_cashouts = user_stats.mines_cashouts + 1""",
-                    str(self.creator.id)
-                )
+                        await conn.execute(
+                            """INSERT INTO user_stats (user_id, mines_clears) VALUES ($1, 1)
+                               ON CONFLICT (user_id) DO UPDATE SET mines_clears = user_stats.mines_clears + 1""",
+                            str(self.creator.id)
+                        )
+                        await conn.execute(
+                            """INSERT INTO user_stats (user_id, mines_cashouts) VALUES ($1, 1)
+                               ON CONFLICT (user_id) DO UPDATE SET mines_cashouts = user_stats.mines_cashouts + 1""",
+                            str(self.creator.id)
+                        )
                         if interaction.guild:
                             row = await get_user(conn, self.creator.id)
                             member = interaction.guild.get_member(self.creator.id)
@@ -8084,11 +8084,11 @@ class MinesView(BaseGameView):
                     payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "mines")
                     await record_game(conn, self.creator.id, True, self.bet, payout, game="mines")
                     await log_transaction(conn, self.creator.id, "mines_timeout_cashout", payout - self.bet)
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, mines_cashouts) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET mines_cashouts = user_stats.mines_cashouts + 1""",
-                    str(self.creator.id)
-                )
+                    await conn.execute(
+                        """INSERT INTO user_stats (user_id, mines_cashouts) VALUES ($1, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET mines_cashouts = user_stats.mines_cashouts + 1""",
+                        str(self.creator.id)
+                    )
                     desc = f"Game timed out — auto cashed out **{format_amount(payout)} 💎** ({self.gems_found} gems found)."
                 else:
                     await update_balance(conn, self.creator.id, self.bet)
@@ -9086,11 +9086,11 @@ class BalloonView(BaseGameView):
                 conn = await get_conn()
                 try:
                     await record_game(conn, self.creator.id, False, self.bet, 0, game="balloon")
-                await conn.execute(
-                    """INSERT INTO user_stats (user_id, balloon_pops) VALUES ($1, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET balloon_pops = user_stats.balloon_pops + 1""",
-                    str(self.creator.id)
-                )
+                    await conn.execute(
+                        """INSERT INTO user_stats (user_id, balloon_pops) VALUES ($1, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET balloon_pops = user_stats.balloon_pops + 1""",
+                        str(self.creator.id)
+                    )
                     await log_transaction(conn, self.creator.id, "balloon_pop", -self.bet)
                     _rank_guild = interaction.guild or bot.get_guild(GUILD_ID)
                     if _rank_guild:
