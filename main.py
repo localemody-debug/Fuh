@@ -145,9 +145,9 @@ CARD_EMOJIS = {
 DICE_EMOJIS = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 
 ROULETTE_OUTCOMES = [
-    ("🔴", "Red",    0.47, 2.0),
-    ("🔵", "Blue",   0.47, 2.0),
-    ("🟡", "Yellow", 0.06, 6.0),
+    ("🔴", "Red",    0.475, 2.0),   # 5% house edge on even-money bets
+    ("🔵", "Blue",   0.475, 2.0),
+    ("🟡", "Yellow", 0.05,  6.0),
 ]
 
 # ─── Per-user locks (prevent race conditions on balance) ─────
@@ -836,7 +836,7 @@ async def update_balance(conn, user_id: int, delta: int):
         delta, now_ts(), str(user_id)
     )
 
-WIN_TAX = 0.15  # 15% win tax on profits — hidden from players on winnings — overridden at runtime by /settax
+WIN_TAX = 0.10  # 10% win tax on profits — PvP games only — overridden at runtime by /settax
 
 async def get_win_tax(conn) -> float:
     """Fetch current tax rate from DB (defaults to 15%)."""
@@ -854,20 +854,25 @@ async def get_win_tax(conn) -> float:
         print(f"[TAX] get_win_tax error: {_err}")
     return WIN_TAX
 
+# Games where tax applies — PvP only (player vs player, not vs house)
+_TAX_GAMES = {"coinflip", "progressive_coinflip", "dice", "war"}
+
 async def apply_win_payout(conn, user_id: int, payout: int, bet: int, game: str = "") -> int:
     """
-    Credit a win payout with tax applied to the PROFIT only.
-    e.g. bet=100, payout=200 → profit=100 → tax=12% → player gets 188 back.
+    Credit a win payout. Tax (10%) only applied on PvP games.
     Returns the actual amount credited.
     """
-    tax_rate    = await get_win_tax(conn)
-    profit      = max(0, payout - bet)
-    tax         = int(profit * tax_rate)
-    after_tax   = payout - tax
+    if game in _TAX_GAMES:
+        tax_rate = await get_win_tax(conn)
+        profit   = max(0, payout - bet)
+        tax      = int(profit * tax_rate)
+        after_tax = payout - tax
+        if tax > 0:
+            await log_transaction(conn, user_id, f"{game}_tax", -tax,
+                                  f"{tax_rate*100:.0f}% win tax on {format_amount(profit)} profit")
+    else:
+        after_tax = payout  # no tax on house games
     await update_balance(conn, user_id, after_tax)
-    if tax > 0:
-        await log_transaction(conn, user_id, f"{game}_tax", -tax,
-                              f"{tax_rate*100:.0f}% win tax on {format_amount(profit)} profit")
     return after_tax
 
 async def deduct_balance_safe(conn, user_id: int, amount: int) -> bool:
@@ -891,7 +896,10 @@ async def set_balance_exact(conn, user_id: int, amount: int):
     )
 
 # Games that do NOT count toward rakeback wagered (too low risk / farmable)
-RAKEBACK_EXCLUDED_GAMES = {"mines", "hilo", "upgrader", "balloon"}
+RAKEBACK_EXCLUDED_GAMES = {"mines", "hilo", "upgrader", "balloon", "towers", "scratch", "slots", "colordice", "horserace"}
+
+# Games excluded from wager requirement progress (multi-risk or farmable)
+WAGER_REQ_EXCLUDED_GAMES = {"mines", "balloon", "towers", "hilo", "upgrader", "scratch", "slots", "colordice", "horserace"}
 
 async def record_game(conn, user_id: int, won: bool, bet: int, payout: int, game: str = ""):
     """Record wagered + win/loss stats. Does NOT touch balance."""
@@ -901,35 +909,38 @@ async def record_game(conn, user_id: int, won: bool, bet: int, payout: int, game
     streak = row["streak"]
     new_streak = (streak + 1 if streak >= 0 else 1) if won else (streak - 1 if streak <= 0 else -1)
     new_max = max(row["max_streak"], new_streak if new_streak > 0 else 0)
+    # Excluded games don't increment wagered — so they don't affect rank progress
+    wagered_increment = 0 if game in WAGER_REQ_EXCLUDED_GAMES else bet
     await conn.execute(
         """UPDATE users SET wagered=wagered+$1, wins=wins+$2, losses=losses+$3,
            streak=$4, max_streak=$5, last_updated=$6 WHERE user_id=$7""",
-        bet, 1 if won else 0, 0 if won else 1, new_streak, new_max, now_ts(), str(user_id)
+        wagered_increment, 1 if won else 0, 0 if won else 1, new_streak, new_max, now_ts(), str(user_id)
     )
-    # Update invite wager requirement progress if invitee hasn't met it yet
-    inv_row = await conn.fetchrow(
-        "SELECT reward_amt, wagered_so_far, req_met FROM invite_rewards WHERE invitee_id=$1",
-        str(user_id)
-    )
-    if inv_row and not inv_row["req_met"]:
-        new_wagered = inv_row["wagered_so_far"] + bet
-        req_met = new_wagered >= inv_row["reward_amt"]
-        await conn.execute(
-            "UPDATE invite_rewards SET wagered_so_far=$1, req_met=$2 WHERE invitee_id=$3",
-            new_wagered, req_met, str(user_id)
+    # Update invite/addcoins wager requirement progress
+    # Excluded games (mines, balloon, towers etc.) don't count toward requirements
+    if game not in WAGER_REQ_EXCLUDED_GAMES:
+        inv_row = await conn.fetchrow(
+            "SELECT reward_amt, wagered_so_far, req_met FROM invite_rewards WHERE invitee_id=$1",
+            str(user_id)
         )
-    # Update addcoins wager requirement progress
-    wr_row = await conn.fetchrow(
-        "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
-        str(user_id)
-    )
-    if wr_row and not wr_row["req_met"]:
-        new_wagered = wr_row["wagered_so_far"] + bet
-        req_met = new_wagered >= wr_row["required_amt"]
-        await conn.execute(
-            "UPDATE wager_requirements SET wagered_so_far=$1, req_met=$2 WHERE user_id=$3",
-            new_wagered, req_met, str(user_id)
+        if inv_row and not inv_row["req_met"]:
+            new_wagered = inv_row["wagered_so_far"] + bet
+            req_met = new_wagered >= inv_row["reward_amt"]
+            await conn.execute(
+                "UPDATE invite_rewards SET wagered_so_far=$1, req_met=$2 WHERE invitee_id=$3",
+                new_wagered, req_met, str(user_id)
+            )
+        wr_row = await conn.fetchrow(
+            "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
+            str(user_id)
         )
+        if wr_row and not wr_row["req_met"]:
+            new_wagered = wr_row["wagered_so_far"] + bet
+            req_met = new_wagered >= wr_row["required_amt"]
+            await conn.execute(
+                "UPDATE wager_requirements SET wagered_so_far=$1, req_met=$2 WHERE user_id=$3",
+                new_wagered, req_met, str(user_id)
+            )
     # Track wagered-since-last-rakeback-claim (excluded games don't count)
     if game not in RAKEBACK_EXCLUDED_GAMES:
         await conn.execute(
@@ -4503,9 +4514,8 @@ async def _process_dice_roll(state: DiceGameState, roller: discord.User,
 
     # Build roll embed
     roll_embed = discord.Embed(
-        title=f"🎲  {roller.display_name} rolled!",
         color=C_GOLD,
-        description=f"{dice_emoji}  **{roll}** — {roller.mention} has locked in their roll."
+        description=f"{roller.mention} rolled a **{roll}**!"
     )
     if roll_gif:
         roll_embed.set_image(url=roll_gif)
@@ -4809,12 +4819,12 @@ class RouletteView(BaseGameView):
         # Bar is 10 slots wide. A "pointer" slides across showing
         # the color tiles. Slows down near the end like a real wheel.
         BAR_LENGTH  = 5
-        SLOT_COLORS = ["🔴", "🔵", "🟡", "🔴", "🔵"]
-        POINTER     = "⬆️"
+        SLOT_COLORS = ["🟥", "🟦", "🟨", "🟥", "🟦"]
+        POINTER     = "▲"
 
         msg = self._original_message
         try:
-            await msg.edit(embed=discord.Embed(title="◉  ROULETTE  —  SPINNING", description="```\n  ◉ ◉ ◉ ◉ ◉  spinning...\n```", color=C_GOLD), view=None)
+            await msg.edit(embed=discord.Embed(title="🟥  ROULETTE  —  SPINNING", description="```\n  🟥 🟦 🟨 🟥 🟦  spinning...\n```", color=C_GOLD), view=None)
         except Exception as e:
 
             print(f"[ERROR] {type(e).__name__}: {e}")
@@ -4862,14 +4872,17 @@ class RouletteView(BaseGameView):
                 (e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name
             )
         else:
-            r, cumulative = random.random(), 0.0
-            # Default to last outcome in case of float rounding
-            result_emoji, result_name, result_multi = ROULETTE_OUTCOMES[-1][0], ROULETTE_OUTCOMES[-1][1], ROULETTE_OUTCOMES[-1][3]
-            for emoji, name, prob, multi in ROULETTE_OUTCOMES:
-                cumulative += prob
-                if r < cumulative:
-                    result_emoji, result_name, result_multi = emoji, name, multi
-                    break
+            # House wins 52.5% of the time — decide outcome first, then pick matching result
+            house_wins = random.random() < BOT_HOUSE_WIN
+            if house_wins:
+                # Pick any outcome that isn't what the player chose
+                losing_outcomes = [(e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name]
+                result_emoji, result_name, result_multi = random.choice(losing_outcomes)
+            else:
+                # Player wins — result matches their choice
+                result_emoji, result_name, result_multi = next(
+                    (e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n == chosen_name
+                )
 
         won    = chosen_name == result_name
         # payout = full return including stake (e.g. 2× means get back 2× your bet)
@@ -5118,6 +5131,7 @@ class BaccaratView(BaseGameView):
         pt, bt  = bac_total(ph), bac_total(bh)
         natural = pt >= 8 or bt >= 8
 
+
         if not natural:
             drew_player = False
             if pt <= 5:
@@ -5168,8 +5182,21 @@ class BaccaratView(BaseGameView):
 
         bt = bac_total(bh)
         # Cards are final — winner = whoever has higher total, ties stay ties
-        # House edge is baked into the drawing rules above (banker draws less = slight banker edge)
-        winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
+        # House wins 52.5% of bets — decide outcome first, cards are just for show
+        _bac_forced = _force_result.pop(self.creator.id, None)
+        if _bac_forced == "win":
+            player_bet_wins = True
+        elif _bac_forced == "lose":
+            player_bet_wins = False
+        else:
+            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 47.5% player wins
+
+        if bet_type == "Tie":
+            # Tie bets: always use real card math (too rare to skew meaningfully)
+            winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
+        else:
+            # Force the winner to match or oppose the player's bet
+            winner = bet_type if player_bet_wins else ("Banker" if bet_type == "Player" else "Player")
 
         if bet_type == winner:
             multiplier = 9.0 if winner == "Tie" else 2.0
@@ -5185,6 +5212,10 @@ class BaccaratView(BaseGameView):
             won        = False
 
         is_push = (winner == "Tie" and bet_type in ("Player", "Banker"))
+        # Hidden 5.25% house edge: flip a win to a loss (not applied on pushes/ties)
+        if won and not is_push and _bac_house_flip:
+            won    = False
+            payout = 0
         if not is_push:
             record_streak(self.creator.id, won)
         net     = payout - self.bet
@@ -6370,6 +6401,8 @@ class WarView(BaseGameView):
         )
 
         result_embed = discord.Embed(color=color, description=f"## ⚔️  WAR — {title}\n{result_desc(creator_won if not is_tie else False, is_tie, self.bet, payout)}")
+        result_embed.add_field(name=f"🃏 {self.creator.display_name}", value=f"**{war_card_str(creator_card)}**", inline=True)
+        result_embed.add_field(name=f"🃏 {opponent_name}",             value=f"**{war_card_str(opponent_card)}**", inline=True)
         result_embed.add_field(name="💰 Bet",    value=f"**{format_amount(self.bet)} 💎**",  inline=True)
         result_embed.add_field(name="🎁 Payout", value=f"**{format_amount(payout)} 💎**",   inline=True)
         result_embed.set_thumbnail(url=await get_avatar(self.creator))
@@ -6634,29 +6667,35 @@ class HiloView(BaseGameView):
 
             prev_card  = self.current_card
             prev_rank  = prev_card[0]
-            new_card   = hilo_card()
-            new_rank   = new_card[0]
 
-            # /test force override — rig the new card rank
+            # Decide win/loss via house edge first, then draw a matching card
             _hilo_forced = _force_result.pop(self.creator.id, None)
             if _hilo_forced == "win":
-                # Make the new card satisfy the player's guess
-                if direction == "higher":
-                    new_rank = min(prev_rank + random.randint(1, 4), 13)
-                elif direction == "lower":
-                    new_rank = max(prev_rank - random.randint(1, 4), 1)
-                else:  # same
-                    new_rank = prev_rank
-                new_card = (new_rank, random.choice(["♠", "♥", "♦", "♣"]))
+                player_wins = True
             elif _hilo_forced == "lose":
-                # Make the new card fail the player's guess
-                if direction == "higher":
-                    new_rank = max(prev_rank - random.randint(1, 4), 1)
-                elif direction == "lower":
-                    new_rank = min(prev_rank + random.randint(1, 4), 13)
-                else:  # same — any different rank
-                    new_rank = (prev_rank % 13) + 1
-                new_card = (new_rank, random.choice(["♠", "♥", "♦", "♣"]))
+                player_wins = False
+            else:
+                player_wins = random.random() >= BOT_HOUSE_WIN  # 47.5% player wins
+
+            if direction == "higher":
+                valid_win  = list(range(prev_rank + 1, 14))
+                valid_lose = list(range(1, prev_rank))
+            elif direction == "lower":
+                valid_win  = list(range(1, prev_rank))
+                valid_lose = list(range(prev_rank + 1, 14))
+            else:  # same
+                valid_win  = [prev_rank]
+                valid_lose = [r for r in range(1, 14) if r != prev_rank]
+
+            if player_wins and valid_win:
+                new_rank = random.choice(valid_win)
+            elif not player_wins and valid_lose:
+                new_rank = random.choice(valid_lose)
+            else:
+                # Edge case: no valid card in that direction — draw freely
+                new_rank = random.randint(1, 13)
+
+            new_card = (new_rank, random.choice(["♠", "♥", "♦", "♣"]))
 
             # Determine outcome
             if direction == "same":
@@ -6668,6 +6707,7 @@ class HiloView(BaseGameView):
                     (direction == "higher" and new_rank > prev_rank) or
                     (direction == "lower"  and new_rank < prev_rank)
                 )
+
 
             if is_tie:
                 # Natural tie on higher/lower guess — free redraw
@@ -7776,24 +7816,22 @@ MINES_GRID_SIZE = 25
 
 def mines_dynamic_factor(mines: int) -> float:
     """
-    Per-mine-count payout factor. Ensures first gem always pays > 1x.
-    Low mine counts need a higher factor so payouts feel meaningful.
-    House edge comes from the 15% win tax applied on cashout.
+    Per-mine-count multiplier factor. Must always be > (safe/total) so the
+    multiplier grows with every gem click. Values below 1.0 apply house edge.
     """
     safe = MINES_GRID_SIZE - mines
     if safe <= 0:
         return 0.01
-    prob_first = safe / MINES_GRID_SIZE
-    # Target first-gem multiplier scales with risk level
+    # Factor must exceed safe/total so mult always increases each click.
+    # 1-mine full clear pays ~16x (fair = 25x). House edge via rigged grid placement.
     if mines == 1:
-        target_first = 1.02
+        return 0.982
     elif mines <= 3:
-        target_first = 1.04 + mines * 0.01
+        return 0.95
     elif mines <= 10:
-        target_first = 1.08 + mines * 0.03
+        return 0.92
     else:
-        target_first = 1.12 + mines * 0.05
-    return target_first * prob_first
+        return 0.89
 
 def mines_calc_mult(mines: int, gems_found: int) -> float:
     if gems_found == 0:
@@ -7996,6 +8034,30 @@ class MinesView(BaseGameView):
             else:
                 self.revealed.add(index)
                 self.gems_found += 1
+
+                # ── Hidden house edge: re-bias bomb positions after each safe click ──
+                # Bombs drift toward unrevealed tiles that are statistically likely
+                # to be clicked next (adjacent/center), raising actual hit rate above
+                # what the displayed multiplier implies.
+                unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in self.revealed]
+                if len(unrevealed) >= self.mines and not self.done:
+                    # Weight tiles toward center (index 12) and away from corners
+                    def _tile_weight(idx):
+                        row, col = divmod(idx, 5)
+                        dist = abs(row - 2) + abs(col - 2)  # Manhattan from center
+                        return max(1, 5 - dist)  # center = weight 5, corners = weight 1
+                    weights = [_tile_weight(i) for i in unrevealed]
+                    new_bombs = random.choices(unrevealed, weights=weights, k=self.mines)
+                    # Rebuild grid: gems everywhere, then place biased bombs
+                    new_grid = ["gem"] * MINES_GRID_SIZE
+                    for b in new_bombs:
+                        new_grid[b] = "bomb"
+                    # Keep already-revealed tiles as gems (they were already safe)
+                    for r in self.revealed:
+                        new_grid[r] = "gem"
+                    self.grid = new_grid
+                # ── End hidden edge ──
+
                 gems_total = MINES_GRID_SIZE - self.mines
 
                 if self.gems_found >= gems_total:
@@ -8851,15 +8913,15 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
 #   - Cash out anytime after 1 pump
 
 BALLOON_POP_CHANCES = [
-    0.12,  # pump 1  — 6% avg edge
-    0.21,  # pump 2
-    0.31,  # pump 3
-    0.41,  # pump 4
-    0.51,  # pump 5
-    0.63,  # pump 6
-    0.76,  # pump 7
-    0.88,  # pump 8
-    0.97,  # pump 9+
+    0.24,  # pump 1  — EV 0.95x at cashout (5% edge)
+    0.33,  # pump 2
+    0.43,  # pump 3
+    0.53,  # pump 4
+    0.63,  # pump 5
+    0.74,  # pump 6
+    0.85,  # pump 7
+    0.93,  # pump 8
+    0.98,  # pump 9+
 ]
 
 BALLOON_SIZES = ["🔵", "🔵", "🟣", "🟣", "🟠", "🟠", "🔴", "🔴", "💢", "💥"]
@@ -9091,7 +9153,8 @@ class BalloonView(BaseGameView):
                 popped = False   # never pop while forced win active
                 # Note: consumed on cashout below
             else:
-                popped = random.random() < pop_chance
+                # House wins 52.5% of pumps — player survives 47.5% of the time
+                popped = random.random() < BOT_HOUSE_WIN
 
             self.pumps += 1
 
@@ -9701,7 +9764,7 @@ class ColorDiceView(BaseGameView):
         # Roll dice + apply house edge
         slots = cd_roll_slots()
         count = cd_count(slots, chosen_name)
-        if count == 1 and random.random() < BOT_HOUSE_WIN_CD:
+        if count == 1 and random.random() < BOT_HOUSE_WIN:
             attempts = 0
             while count == 1 and attempts < 50:
                 slots = cd_roll_slots()
@@ -14543,55 +14606,105 @@ CB_BOT_LUCK    = 65   # bot pull luck
 # ── Case costs & prizes (internal units: 100 = 1 pt = $0.01) ──
 # Costs: $5 / $2.50 / $1 / $0.50 / $0.20
 CASES = {
-    "diamond": {"name": "Diamond Case",  "emoji": "💎", "cost": 50_000,  "color": 0x00CFFF},
-    "gold":    {"name": "Gold Case",     "emoji": "🥇", "cost": 25_000,  "color": 0xFFD700},
-    "silver":  {"name": "Silver Case",   "emoji": "🥈", "cost": 10_000,  "color": 0xC0C0C0},
-    "bronze":  {"name": "Bronze Case",   "emoji": "🥉", "cost": 5_000,   "color": 0xCD7F32},
-    "basic":   {"name": "Basic Case",    "emoji": "📦", "cost": 2_000,   "color": 0x95A5A6},
+    # Named after all server ranks — highest to lowest cost
+    "champion":    {"name": "Champion Case",     "emoji": "👑", "cost": 750_000_000, "color": 0xFFD700},
+    "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost": 550_000_000, "color": 0xB9F2FF},
+    "legend":      {"name": "Legend Case",       "emoji": "🏆", "cost": 400_000_000, "color": 0xFFD700},
+    "whale":       {"name": "Whale Case",        "emoji": "🐋", "cost": 300_000_000, "color": 0x1E90FF},
+    "high_roller": {"name": "High Roller Case",  "emoji": "🎰", "cost": 225_000_000, "color": 0xFF6600},
+    "emerald":     {"name": "Emerald Case",      "emoji": "💚", "cost": 175_000_000, "color": 0x50C878},
+    "ruby":        {"name": "Ruby Case",         "emoji": "🔴", "cost": 125_000_000, "color": 0x9B111E},
+    "platinum":    {"name": "Platinum Case",     "emoji": "💿", "cost":  80_000_000, "color": 0xE5E4E2},
+    "gold":        {"name": "Gold Case",         "emoji": "🥇", "cost":  55_000_000, "color": 0xFFD700},
+    "silver":      {"name": "Silver Case",       "emoji": "🥈", "cost":  38_000_000, "color": 0xC0C0C0},
+    "bronze":      {"name": "Bronze Case",       "emoji": "🥉", "cost":  25_000_000, "color": 0xCD7F32},
 }
 
-# Prize tables: (weight, fixed_value_units, label)
-# Values in internal units (100 units = 1 pt). House edge baked into weights.
+# Prize tables: (weight, value, label)
+# Tiers: Common / Uncommon / Legendary / Mythical / OG
+# Weights 55/25/13/6/1 — EV ≈ 62% of case cost (~38% house edge).
 CASE_PRIZES = {
-    "diamond": [
-        (55, 25_000,   "Small Crypto Bag"),    # Epic    — 0.5x
-        (28, 60_000,   "Altcoin Stack"),       # Rare    — 1.2x
-        (12, 150_000,  "ETH Fragment"),        # Legendary — 3x
-        (4,  400_000,  "BTC Shard"),           # Secret  — 8x
-        (1,  1_250_000,"Satoshi Vault"),       # OG      — 25x
+    "champion": [
+        (55,  75_000_000,  "Champion Crumbs"),      # Common     — 0.10x
+        (25, 281_000_000,  "Crown Fragment"),       # Uncommon   — 0.375x
+        (13, 937_000_000,  "Champion Relic"),       # Legendary  — 1.25x
+        ( 6, 2_625_000_000,"Hall of Champions"),   # Mythical   — 3.5x
+        ( 1, 7_500_000_000,"The Crown Jewel"),     # OG         — 10x
+    ],
+    "diamond_whale": [
+        (55,  55_000_000,  "Diamond Dust"),         # Common     — 0.10x
+        (25, 206_000_000,  "Whale Tooth"),          # Uncommon   — 0.375x
+        (13, 687_000_000,  "Diamond Vault"),        # Legendary  — 1.25x
+        ( 6, 1_925_000_000,"Leviathan Drop"),      # Mythical   — 3.5x
+        ( 1, 5_500_000_000,"Diamond Genesis"),     # OG         — 10x
+    ],
+    "legend": [
+        (55,  40_000_000,  "Legend Scraps"),        # Common     — 0.10x
+        (25, 150_000_000,  "Crypto Vault"),         # Uncommon   — 0.375x
+        (13, 500_000_000,  "Legend Shard"),         # Legendary  — 1.25x
+        ( 6, 1_400_000_000,"Hall of Fame Drop"),   # Mythical   — 3.5x
+        ( 1, 4_000_000_000,"Satoshi Throne"),      # OG         — 10x
+    ],
+    "whale": [
+        (55,  30_000_000,  "Whale Drip"),           # Common     — 0.10x
+        (25, 112_000_000,  "Deep Sea Chip"),        # Uncommon   — 0.373x
+        (13, 375_000_000,  "Leviathan Cache"),      # Legendary  — 1.25x
+        ( 6, 1_050_000_000,"Whale Genesis"),       # Mythical   — 3.5x
+        ( 1, 3_000_000_000,"Ocean Throne"),        # OG         — 10x
+    ],
+    "high_roller": [
+        (55,  22_000_000,  "Table Crumbs"),         # Common     — 0.098x
+        (25,  84_000_000,  "Casino Chip"),          # Uncommon   — 0.373x
+        (13, 281_000_000,  "High Stakes Pot"),      # Legendary  — 1.249x
+        ( 6,  787_000_000, "VIP Vault"),           # Mythical   — 3.498x
+        ( 1, 2_250_000_000,"The House Edge"),      # OG         — 10x
+    ],
+    "emerald": [
+        (55,  17_000_000,  "Green Dust"),           # Common     — 0.097x
+        (25,  65_000_000,  "Emerald Shard"),        # Uncommon   — 0.371x
+        (13, 218_000_000,  "Forest Vault"),         # Legendary  — 1.246x
+        ( 6,  612_000_000, "Emerald Throne"),      # Mythical   — 3.497x
+        ( 1, 1_750_000_000,"Crown Jewel"),         # OG         — 10x
+    ],
+    "ruby": [
+        (55,  12_000_000,  "Blood Drop"),           # Common     — 0.096x
+        (25,  46_000_000,  "Ruby Shard"),           # Uncommon   — 0.368x
+        (13, 156_000_000,  "Crimson Vault"),        # Legendary  — 1.248x
+        ( 6,  437_000_000, "Ruby Throne"),         # Mythical   — 3.496x
+        ( 1, 1_250_000_000,"Red Genesis"),         # OG         — 10x
+    ],
+    "platinum": [
+        (55,   8_000_000,  "Shiny Crumbs"),         # Common     — 0.10x
+        (25,  30_000_000,  "Platinum Dust"),        # Uncommon   — 0.375x
+        (13, 100_000_000,  "Steel Vault"),          # Legendary  — 1.25x
+        ( 6,  280_000_000, "Platinum Relic"),      # Mythical   — 3.5x
+        ( 1,  800_000_000, "Platinum Genesis"),    # OG         — 10x
     ],
     "gold": [
-        (55, 10_000,   "Penny Drop"),          # Epic    — 0.4x
-        (28, 30_000,   "Altcoin Flip"),        # Rare    — 1.2x
-        (12, 70_000,   "Crypto Stash"),        # Legendary — 2.8x
-        (4,  200_000,  "Gold Wallet"),         # Secret  — 8x
-        (1,  600_000,  "Whale Alert"),         # OG      — 24x
+        (55,   5_500_000,  "Pocket Gold"),          # Common     — 0.10x
+        (25,  20_500_000,  "Gold Chip"),            # Uncommon   — 0.373x
+        (13,  68_000_000,  "Gold Vault"),           # Legendary  — 1.236x
+        ( 6,  192_000_000, "Gold Throne"),         # Mythical   — 3.491x
+        ( 1,  550_000_000, "Gold Genesis"),        # OG         — 10x
     ],
     "silver": [
-        (55, 4_000,    "Dust"),               # Epic    — 0.4x
-        (28, 12_000,   "Micro Stack"),         # Rare    — 1.2x
-        (12, 28_000,   "Litecoin Slice"),      # Legendary — 2.8x
-        (4,  75_000,   "Silver Wallet"),       # Secret  — 7.5x
-        (1,  250_000,  "Moon Bag"),            # OG      — 25x
+        (55,   3_800_000,  "Spare Change"),         # Common     — 0.10x
+        (25,  14_000_000,  "Silver Dust"),          # Uncommon   — 0.368x
+        (13,  47_000_000,  "Silver Vault"),         # Legendary  — 1.237x
+        ( 6,  133_000_000, "Silver Throne"),       # Mythical   — 3.5x
+        ( 1,  380_000_000, "Silver Genesis"),      # OG         — 10x
     ],
     "bronze": [
-        (55, 1_800,    "Crumbs"),             # Epic    — 0.36x
-        (28, 5_500,    "Pocket Change"),       # Rare    — 1.1x
-        (12, 13_000,   "Small Stack"),         # Legendary — 2.6x
-        (4,  35_000,   "Bronze Vault"),        # Secret  — 7x
-        (1,  100_000,  "Hidden Gem"),          # OG      — 20x
-    ],
-    "basic": [
-        (55, 700,      "Lint"),               # Epic    — 0.35x
-        (28, 2_200,    "Spare Change"),        # Rare    — 1.1x
-        (12, 5_200,    "Lucky Dip"),           # Legendary — 2.6x
-        (4,  14_000,   "Hidden Stash"),        # Secret  — 7x
-        (1,  40_000,   "Mystery Box"),         # OG      — 20x
+        (55,   2_500_000,  "Crumbs"),              # Common     — 0.10x
+        (25,   9_300_000,  "Bronze Dust"),          # Uncommon   — 0.372x
+        (13,  31_000_000,  "Bronze Vault"),         # Legendary  — 1.24x
+        ( 6,   87_000_000, "Bronze Throne"),       # Mythical   — 3.48x
+        ( 1,  250_000_000, "Bronze Genesis"),      # OG         — 10x
     ],
 }
 
-PRIZE_TIER_EMOJIS  = ["⬜", "🟦", "🟣", "🔴", "🟡"]
-PRIZE_TIER_LABELS  = ["Epic", "Rare", "Legendary", "Secret", "OG"]
+PRIZE_TIER_EMOJIS  = ["⬜", "🟩", "🟣", "🔴", "🟡"]
+PRIZE_TIER_LABELS  = ["Common", "Uncommon", "Legendary", "Mythical", "OG"]
 MODE_PLAYER_COUNT  = {"1v1": 2, "1v1v1": 3, "2v2": 4}
 
 
