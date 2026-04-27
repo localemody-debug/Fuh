@@ -15309,7 +15309,7 @@ async def _run_cb(battle_id, message, case_key, num_cases,
     def _reel_line(val, tier, name=None, spinning=True):
         """Single item line — ▶ arrow highlights the landing slot."""
         arrow  = "▶" if not spinning else " "
-        label  = f"**{name or '???'}**  ·  {format_amount(val)} 💎  *{PRIZE_TIER_LABELS[tier]}*"
+        label  = f"**{name or '???'}**  ·  {format_amount(val // 100)} 💎  *{PRIZE_TIER_LABELS[tier]}*"
         return f"{arrow} {PRIZE_TIER_EMOJIS[tier]} {label}"
 
     def _player_field(pid, round_idx, reel_val=None, reel_tier=None, reel_name=None, spinning=True):
@@ -15318,14 +15318,14 @@ async def _run_cb(battle_id, message, case_key, num_cases,
         # Past rounds — compact single line to stay under 1024 char limit
         for i in range(round_idx):
             v, t, n = results[pid][i]
-            lines.append(f"{PRIZE_TIER_EMOJIS[t]} ~~{n}~~ `{format_amount(v)}`")
+            lines.append(f"{PRIZE_TIER_EMOJIS[t]} ~~{n}~~ `{format_amount(v // 100)}`")
         # Current round — either spinning or revealed
         if reel_val is not None:
             lines.append(_reel_line(reel_val, reel_tier, reel_name, spinning=spinning))
         # Subtotal of confirmed rounds
         done = sum(v for v, t, n in results[pid][:round_idx + (0 if spinning else 1)])
         if done:
-            lines.append(f"**Total: {format_amount(done)}**")
+            lines.append(f"**Total: {format_amount(done // 100)}**")
         return "\n".join(lines) if lines else "\u200b"
 
     for round_idx in range(num_cases):
@@ -15440,18 +15440,18 @@ async def _run_cb(battle_id, message, case_key, num_cases,
         # Show item summary — compact if many cases
         if num_cases <= 3:
             item_lines = [
-                f"{PRIZE_TIER_EMOJIS[t]} {n} `{format_amount(v)}`"
+                f"{PRIZE_TIER_EMOJIS[t]} {n} `{format_amount(v // 100)}`"
                 for v, t, n in results[p["id"]]
             ]
             items_str = "\n".join(item_lines)
         else:
             # Summarise: show best item + count
             best_v, best_t, best_n = max(results[p["id"]], key=lambda x: x[0])
-            items_str = f"{PRIZE_TIER_EMOJIS[best_t]} Best: **{best_n}** `{format_amount(best_v)}`"
+            items_str = f"{PRIZE_TIER_EMOJIS[best_t]} Best: **{best_n}** `{format_amount(best_v // 100)}`"
         board_lines.append(
             f"{pos_icons[min(i, 3)]} {p['mention']}{crown}\n"
             f"{items_str}\n"
-            f"┗ **{format_amount(totals[p['id']])}** total"
+            f"┗ **{format_amount(totals[p['id']] // 100)}** total"
         )
 
     mode_labels  = {"1v1": "⚔️ 1v1", "1v1v1": "🔱 1v1v1", "2v2": "🤝 2v2"}
@@ -15461,14 +15461,14 @@ async def _run_cb(battle_id, message, case_key, num_cases,
             f"## ⚔️  BATTLE OVER  ·  {mode_labels.get(mode, mode).upper()}\n"
             f"### 🏆  {w_label} wins!\n"
             f"```diff\n"
-            f"+ {format_amount(share)} payout\n"
+            f"+ {format_amount(share // 100)} payout\n"
             f"# {num_cases} case{'s' if num_cases > 1 else ''}  ·  {len(players)} players\n"
             f"```"
         )
     )
     result_embed.add_field(name="Scoreboard", value="\n\n".join(board_lines), inline=False)
-    result_embed.add_field(name="Payout",      value=f"`{format_amount(share)} 💎`",            inline=True)
-    result_embed.add_field(name="Item Value",  value=f"`{format_amount(total_items_value)} 💎`", inline=True)
+    result_embed.add_field(name="Payout",      value=f"`{format_amount(share // 100)} 💎`",            inline=True)
+    result_embed.add_field(name="Item Value",  value=f"`{format_amount(total_items_value // 100)} 💎`", inline=True)
     result_embed.add_field(name="Case",        value=f"{CASES[case_key]['emoji']} {CASES[case_key]['name']} ×{num_cases}", inline=True)
     result_embed.set_footer(text=f"Battle #{battle_id}  ·  {now_ts()}")
 
@@ -15477,14 +15477,22 @@ async def _run_cb(battle_id, message, case_key, num_cases,
     except Exception as e:
         print(f"[CB FINAL] edit failed: {e}")
 
+    # ── Release game sessions for all human players ──
+    for p in players:
+        if not p["is_bot"]:
+            try:
+                _end_game_session(int(p["id"]))
+            except Exception:
+                pass
+
     _cb_bot_name_cache.pop(battle_id, None)
 
     log_e = discord.Embed(title="⚔️ Case Battle Resolved", color=C_GOLD)
     log_e.add_field(name="Battle",  value=f"#{battle_id}  ·  {mode}",     inline=True)
     log_e.add_field(name="Case",    value=f"{case['name']}  ×{num_cases}", inline=True)
-    log_e.add_field(name="Items Total", value=format_amount(total_items_value), inline=True)
-    log_e.add_field(name="Winner",      value=w_label,                          inline=True)
-    log_e.add_field(name="Payout",      value=format_amount(share),             inline=True)
+    log_e.add_field(name="Items Total", value=format_amount(total_items_value // 100), inline=True)
+    log_e.add_field(name="Winner",      value=w_label,                                 inline=True)
+    log_e.add_field(name="Payout",      value=format_amount(share // 100),             inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
@@ -15504,6 +15512,7 @@ async def _cb_timeout(battle_id: int, message, view: CaseBattleLobbyView):
             return
         view.started = True
 
+    prows = []
     conn = await get_conn()
     try:
         row = await conn.fetchrow("SELECT status FROM case_battles WHERE id=$1", battle_id)
@@ -15525,6 +15534,14 @@ async def _cb_timeout(battle_id: int, message, view: CaseBattleLobbyView):
         print(f"[CB TIMEOUT] Error: {e}")
     finally:
         await release_conn(conn)
+
+    # Release game sessions for all human players
+    for p in prows:
+        if not p["is_bot"]:
+            try:
+                _end_game_session(int(p["user_id"]))
+            except Exception:
+                pass
 
     _cb_bot_name_cache.pop(battle_id, None)
 
