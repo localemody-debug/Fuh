@@ -14607,100 +14607,102 @@ CB_BOT_LUCK    = 65   # bot pull luck
 # Costs: $5 / $2.50 / $1 / $0.50 / $0.20
 CASES = {
     # Named after all server ranks — highest to lowest cost
-    "champion":    {"name": "Champion Case",     "emoji": "👑", "cost": 750_000_000, "color": 0xFFD700},
-    "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost": 550_000_000, "color": 0xB9F2FF},
-    "legend":      {"name": "Legend Case",       "emoji": "🏆", "cost": 400_000_000, "color": 0xFFD700},
-    "whale":       {"name": "Whale Case",        "emoji": "🐋", "cost": 300_000_000, "color": 0x1E90FF},
-    "high_roller": {"name": "High Roller Case",  "emoji": "🎰", "cost": 225_000_000, "color": 0xFF6600},
-    "emerald":     {"name": "Emerald Case",      "emoji": "💚", "cost": 175_000_000, "color": 0x50C878},
-    "ruby":        {"name": "Ruby Case",         "emoji": "🔴", "cost": 125_000_000, "color": 0x9B111E},
-    "platinum":    {"name": "Platinum Case",     "emoji": "💿", "cost":  80_000_000, "color": 0xE5E4E2},
-    "gold":        {"name": "Gold Case",         "emoji": "🥇", "cost":  55_000_000, "color": 0xFFD700},
-    "silver":      {"name": "Silver Case",       "emoji": "🥈", "cost":  38_000_000, "color": 0xC0C0C0},
-    "bronze":      {"name": "Bronze Case",       "emoji": "🥉", "cost":  25_000_000, "color": 0xCD7F32},
+    # Internal units = display value * 100 (e.g. 25M display = 2_500_000_000 internal)
+    "champion":    {"name": "Champion Case",      "emoji": "👑", "cost": 75_000_000_000, "color": 0xFFD700},
+    "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost": 55_000_000_000, "color": 0xB9F2FF},
+    "legend":      {"name": "Legend Case",        "emoji": "🏆", "cost": 40_000_000_000, "color": 0xFFD700},
+    "whale":       {"name": "Whale Case",         "emoji": "🐋", "cost": 30_000_000_000, "color": 0x1E90FF},
+    "high_roller": {"name": "High Roller Case",   "emoji": "🎰", "cost": 22_500_000_000, "color": 0xFF6600},
+    "emerald":     {"name": "Emerald Case",       "emoji": "💚", "cost": 17_500_000_000, "color": 0x50C878},
+    "ruby":        {"name": "Ruby Case",          "emoji": "🔴", "cost": 12_500_000_000, "color": 0x9B111E},
+    "platinum":    {"name": "Platinum Case",      "emoji": "💿", "cost":  8_000_000_000, "color": 0xE5E4E2},
+    "gold":        {"name": "Gold Case",          "emoji": "🥇", "cost":  5_500_000_000, "color": 0xFFD700},
+    "silver":      {"name": "Silver Case",        "emoji": "🥈", "cost":  3_800_000_000, "color": 0xC0C0C0},
+    "bronze":      {"name": "Bronze Case",        "emoji": "🥉", "cost":  2_500_000_000, "color": 0xCD7F32},
 }
 
 # Prize tables: (weight, value, label)
 # Tiers: Common / Uncommon / Legendary / Mythical / OG
-# Weights 55/25/13/6/1 — EV ≈ 62% of case cost (~38% house edge).
+# Weights 62/24/10/3/1 — Common=0.70x, Uncommon=0.85x, OG=5x case cost.
+# All values in internal units (display * 100)
 CASE_PRIZES = {
     "champion": [
-        (55,  75_000_000,  "Champion Crumbs"),      # Common     — 0.10x
-        (25, 281_000_000,  "Crown Fragment"),       # Uncommon   — 0.375x
-        (13, 937_000_000,  "Champion Relic"),       # Legendary  — 1.25x
-        ( 6, 2_625_000_000,"Hall of Champions"),   # Mythical   — 3.5x
-        ( 1, 7_500_000_000,"The Crown Jewel"),     # OG         — 10x
-    ],
+        (62,     52,500,000,000, "Champion Crumbs"),  # Common     — 0.7x  (525.00M)
+        (24,     63,750,000,000, "Crown Fragment"),  # Uncommon   — 0.85x  (637.50M)
+        (10,     93,750,000,000, "Champion Relic"),  # Legendary  — 1.25x  (937.50M)
+        ( 3,    262,500,000,000, "Hall of Champions"),  # Mythical   — 3.5x  (2625.00M)
+        ( 1,    375,000,000,000, "The Crown Jewel"),  # OG         — 5.0x  (3750.00M)
+    ],  # case cost = 750M display
     "diamond_whale": [
-        (55,  55_000_000,  "Diamond Dust"),         # Common     — 0.10x
-        (25, 206_000_000,  "Whale Tooth"),          # Uncommon   — 0.375x
-        (13, 687_000_000,  "Diamond Vault"),        # Legendary  — 1.25x
-        ( 6, 1_925_000_000,"Leviathan Drop"),      # Mythical   — 3.5x
-        ( 1, 5_500_000_000,"Diamond Genesis"),     # OG         — 10x
-    ],
+        (62,     38,500,000,000, "Diamond Dust"),  # Common     — 0.7x  (385.00M)
+        (24,     46,750,000,000, "Whale Tooth"),  # Uncommon   — 0.85x  (467.50M)
+        (10,     68,750,000,000, "Diamond Vault"),  # Legendary  — 1.25x  (687.50M)
+        ( 3,    192,500,000,000, "Leviathan Drop"),  # Mythical   — 3.5x  (1925.00M)
+        ( 1,    275,000,000,000, "Diamond Genesis"),  # OG         — 5.0x  (2750.00M)
+    ],  # case cost = 550M display
     "legend": [
-        (55,  40_000_000,  "Legend Scraps"),        # Common     — 0.10x
-        (25, 150_000_000,  "Crypto Vault"),         # Uncommon   — 0.375x
-        (13, 500_000_000,  "Legend Shard"),         # Legendary  — 1.25x
-        ( 6, 1_400_000_000,"Hall of Fame Drop"),   # Mythical   — 3.5x
-        ( 1, 4_000_000_000,"Satoshi Throne"),      # OG         — 10x
-    ],
+        (62,     28,000,000,000, "Legend Scraps"),  # Common     — 0.7x  (280.00M)
+        (24,     34,000,000,000, "Crypto Vault"),  # Uncommon   — 0.85x  (340.00M)
+        (10,     50,000,000,000, "Legend Shard"),  # Legendary  — 1.25x  (500.00M)
+        ( 3,    140,000,000,000, "Hall of Fame Drop"),  # Mythical   — 3.5x  (1400.00M)
+        ( 1,    200,000,000,000, "Satoshi Throne"),  # OG         — 5.0x  (2000.00M)
+    ],  # case cost = 400M display
     "whale": [
-        (55,  30_000_000,  "Whale Drip"),           # Common     — 0.10x
-        (25, 112_000_000,  "Deep Sea Chip"),        # Uncommon   — 0.373x
-        (13, 375_000_000,  "Leviathan Cache"),      # Legendary  — 1.25x
-        ( 6, 1_050_000_000,"Whale Genesis"),       # Mythical   — 3.5x
-        ( 1, 3_000_000_000,"Ocean Throne"),        # OG         — 10x
-    ],
+        (62,     21,000,000,000, "Whale Drip"),  # Common     — 0.7x  (210.00M)
+        (24,     25,500,000,000, "Deep Sea Chip"),  # Uncommon   — 0.85x  (255.00M)
+        (10,     37,500,000,000, "Leviathan Cache"),  # Legendary  — 1.25x  (375.00M)
+        ( 3,    105,000,000,000, "Whale Genesis"),  # Mythical   — 3.5x  (1050.00M)
+        ( 1,    150,000,000,000, "Ocean Throne"),  # OG         — 5.0x  (1500.00M)
+    ],  # case cost = 300M display
     "high_roller": [
-        (55,  22_000_000,  "Table Crumbs"),         # Common     — 0.098x
-        (25,  84_000_000,  "Casino Chip"),          # Uncommon   — 0.373x
-        (13, 281_000_000,  "High Stakes Pot"),      # Legendary  — 1.249x
-        ( 6,  787_000_000, "VIP Vault"),           # Mythical   — 3.498x
-        ( 1, 2_250_000_000,"The House Edge"),      # OG         — 10x
-    ],
+        (62,     15,749,999,999, "Table Crumbs"),  # Common     — 0.7x  (157.50M)
+        (24,     19,125,000,000, "Casino Chip"),  # Uncommon   — 0.85x  (191.25M)
+        (10,     28,125,000,000, "High Stakes Pot"),  # Legendary  — 1.25x  (281.25M)
+        ( 3,     78,750,000,000, "VIP Vault"),  # Mythical   — 3.5x  (787.50M)
+        ( 1,    112,500,000,000, "The House Edge"),  # OG         — 5.0x  (1125.00M)
+    ],  # case cost = 225M display
     "emerald": [
-        (55,  17_000_000,  "Green Dust"),           # Common     — 0.097x
-        (25,  65_000_000,  "Emerald Shard"),        # Uncommon   — 0.371x
-        (13, 218_000_000,  "Forest Vault"),         # Legendary  — 1.246x
-        ( 6,  612_000_000, "Emerald Throne"),      # Mythical   — 3.497x
-        ( 1, 1_750_000_000,"Crown Jewel"),         # OG         — 10x
-    ],
+        (62,     12,250,000,000, "Green Dust"),  # Common     — 0.7x  (122.50M)
+        (24,     14,875,000,000, "Emerald Shard"),  # Uncommon   — 0.85x  (148.75M)
+        (10,     21,875,000,000, "Forest Vault"),  # Legendary  — 1.25x  (218.75M)
+        ( 3,     61,250,000,000, "Emerald Throne"),  # Mythical   — 3.5x  (612.50M)
+        ( 1,     87,500,000,000, "Crown Jewel"),  # OG         — 5.0x  (875.00M)
+    ],  # case cost = 175M display
     "ruby": [
-        (55,  12_000_000,  "Blood Drop"),           # Common     — 0.096x
-        (25,  46_000_000,  "Ruby Shard"),           # Uncommon   — 0.368x
-        (13, 156_000_000,  "Crimson Vault"),        # Legendary  — 1.248x
-        ( 6,  437_000_000, "Ruby Throne"),         # Mythical   — 3.496x
-        ( 1, 1_250_000_000,"Red Genesis"),         # OG         — 10x
-    ],
+        (62,      8,750,000,000, "Blood Drop"),  # Common     — 0.7x  (87.50M)
+        (24,     10,625,000,000, "Ruby Shard"),  # Uncommon   — 0.85x  (106.25M)
+        (10,     15,625,000,000, "Crimson Vault"),  # Legendary  — 1.25x  (156.25M)
+        ( 3,     43,750,000,000, "Ruby Throne"),  # Mythical   — 3.5x  (437.50M)
+        ( 1,     62,500,000,000, "Red Genesis"),  # OG         — 5.0x  (625.00M)
+    ],  # case cost = 125M display
     "platinum": [
-        (55,   8_000_000,  "Shiny Crumbs"),         # Common     — 0.10x
-        (25,  30_000_000,  "Platinum Dust"),        # Uncommon   — 0.375x
-        (13, 100_000_000,  "Steel Vault"),          # Legendary  — 1.25x
-        ( 6,  280_000_000, "Platinum Relic"),      # Mythical   — 3.5x
-        ( 1,  800_000_000, "Platinum Genesis"),    # OG         — 10x
-    ],
+        (62,      5,600,000,000, "Shiny Crumbs"),  # Common     — 0.7x  (56.00M)
+        (24,      6,800,000,000, "Platinum Dust"),  # Uncommon   — 0.85x  (68.00M)
+        (10,     10,000,000,000, "Steel Vault"),  # Legendary  — 1.25x  (100.00M)
+        ( 3,     28,000,000,000, "Platinum Relic"),  # Mythical   — 3.5x  (280.00M)
+        ( 1,     40,000,000,000, "Platinum Genesis"),  # OG         — 5.0x  (400.00M)
+    ],  # case cost = 80M display
     "gold": [
-        (55,   5_500_000,  "Pocket Gold"),          # Common     — 0.10x
-        (25,  20_500_000,  "Gold Chip"),            # Uncommon   — 0.373x
-        (13,  68_000_000,  "Gold Vault"),           # Legendary  — 1.236x
-        ( 6,  192_000_000, "Gold Throne"),         # Mythical   — 3.491x
-        ( 1,  550_000_000, "Gold Genesis"),        # OG         — 10x
-    ],
+        (62,      3,849,999,999, "Pocket Gold"),  # Common     — 0.7x  (38.50M)
+        (24,      4,675,000,000, "Gold Chip"),  # Uncommon   — 0.85x  (46.75M)
+        (10,      6,875,000,000, "Gold Vault"),  # Legendary  — 1.25x  (68.75M)
+        ( 3,     19,250,000,000, "Gold Throne"),  # Mythical   — 3.5x  (192.50M)
+        ( 1,     27,500,000,000, "Gold Genesis"),  # OG         — 5.0x  (275.00M)
+    ],  # case cost = 55M display
     "silver": [
-        (55,   3_800_000,  "Spare Change"),         # Common     — 0.10x
-        (25,  14_000_000,  "Silver Dust"),          # Uncommon   — 0.368x
-        (13,  47_000_000,  "Silver Vault"),         # Legendary  — 1.237x
-        ( 6,  133_000_000, "Silver Throne"),       # Mythical   — 3.5x
-        ( 1,  380_000_000, "Silver Genesis"),      # OG         — 10x
-    ],
+        (62,      2,660,000,000, "Spare Change"),  # Common     — 0.7x  (26.60M)
+        (24,      3,230,000,000, "Silver Dust"),  # Uncommon   — 0.85x  (32.30M)
+        (10,      4,750,000,000, "Silver Vault"),  # Legendary  — 1.25x  (47.50M)
+        ( 3,     13,300,000,000, "Silver Throne"),  # Mythical   — 3.5x  (133.00M)
+        ( 1,     19,000,000,000, "Silver Genesis"),  # OG         — 5.0x  (190.00M)
+    ],  # case cost = 38M display
     "bronze": [
-        (55,   2_500_000,  "Crumbs"),              # Common     — 0.10x
-        (25,   9_300_000,  "Bronze Dust"),          # Uncommon   — 0.372x
-        (13,  31_000_000,  "Bronze Vault"),         # Legendary  — 1.24x
-        ( 6,   87_000_000, "Bronze Throne"),       # Mythical   — 3.48x
-        ( 1,  250_000_000, "Bronze Genesis"),      # OG         — 10x
-    ],
+        (62,      1,750,000,000, "Crumbs"),  # Common     — 0.7x  (17.50M)
+        (24,      2,125,000,000, "Bronze Dust"),  # Uncommon   — 0.85x  (21.25M)
+        (10,      3,125,000,000, "Bronze Vault"),  # Legendary  — 1.25x  (31.25M)
+        ( 3,      8,750,000,000, "Bronze Throne"),  # Mythical   — 3.5x  (87.50M)
+        ( 1,     12,500,000,000, "Bronze Genesis"),  # OG         — 5.0x  (125.00M)
+    ],  # case cost = 25M display
 }
 
 PRIZE_TIER_EMOJIS  = ["⬜", "🟩", "🟣", "🔴", "🟡"]
