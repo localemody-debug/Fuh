@@ -2332,13 +2332,15 @@ async def cmd_balance(interaction: discord.Interaction):
     profit_str = f"+{format_amount(abs(net_profit))}" if net_profit >= 0 else f"-{format_amount(abs(net_profit))}"
     embed = discord.Embed(
         color=C_GOLD,
+        title=f"💎  {interaction.user.display_name}'s Balance",
         description=(
-            f"## 💎  {interaction.user.display_name}'s Wallet\n"
-            f"💰 **Gems** — {format_amount(balance)}\n"
-            f"🎲 **Wagered** — {format_amount(wagered)}\n"
-            f"📈 **Profit** — {profit_str}\n"
+            f"💰 Balance: **{format_amount(balance)}** 💎\n"
+            f"🎲 Wagered: **{format_amount(wagered)}** 💎\n"
+            f"📉 Profit: **{profit_str}** 💎\n"
             f"\n"
-            f"Use `/deposit` to top up  ·  `/stock` to withdraw"
+            f"Use /deposit to obtain balance\n"
+            f"Use /stock to view items available for withdraw\n"
+            f"5M ≈ 40M–50M/s"
         )
     )
     embed.set_thumbnail(url=await get_avatar(interaction.user))
@@ -2448,22 +2450,23 @@ async def cmd_leaderboard(interaction: discord.Interaction, sort: str = "wagered
         return
 
     def _lb_embed(lb_rows, lb_sort):
-        MEDAL = {0: "🥇", 1: "🥈", 2: "🥉"}
-        LB_BADGE = {0: "👑 Champion", 1: "💎 Diamond Whale", 2: "💎 Diamond Whale"}
-        lines = []
+        MEDAL  = {0: "🥇", 1: "🥈", 2: "🥉"}
+        BOLT   = "⚡"
+        lines  = []
         for i, r in enumerate(lb_rows):
             rank_e, _, _, _, _ = get_rank(r["wagered"])
-            val   = format_amount(r[lb_sort])
-            medal = MEDAL.get(i, f"`#{i+1}`")
-            badge = f"  `{LB_BADGE[i]}`" if i in LB_BADGE else ""
-            lines.append(f"{medal}  {rank_e} <@{r['user_id']}> — **{val}**{badge}")
-        lbl = "Gems" if lb_sort == "balance" else "Wagered"
+            val  = format_amount(r[lb_sort])
+            if i in MEDAL:
+                lines.append(f"{MEDAL[i]} {rank_e} <@{r['user_id']}> • **{val}**")
+            else:
+                lines.append(f"#{i+1} {BOLT} <@{r['user_id']}> • **{val}**")
+        lbl = "Balance" if lb_sort == "balance" else "Total Wager"
         e   = discord.Embed(
             color=C_GOLD,
-            title=f"✦  Sabpot — Top {lbl}",
+            title=f"🎰  Leaderboard - {lbl}",
             description="\n".join(lines)
         )
-        e.set_footer(text=f"/rank for your stats  ·  /ranks for all ranks  ·  {datetime.now(timezone.utc).strftime('%H:%M')} UTC")
+        e.set_footer(text=f"SABFlippy • Use /rank to check your stats | Today at {datetime.now(timezone.utc).strftime('%H:%M')}")
         _brand_embed(e)
         return e
 
@@ -2635,12 +2638,22 @@ async def cmd_tip(interaction: discord.Interaction, user: discord.Member, amount
     _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
-    log_e = discord.Embed(color=0xF59E0B, title="💸  Tip")
-    log_e.add_field(name="From",    value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
-    log_e.add_field(name="To",      value=f"{user.mention}\n`{user.id}`",                        inline=True)
-    log_e.add_field(name="Amount",  value=f"**{format_amount(amt)} 💎**",                        inline=False)
-    log_e.add_field(name="Balances after", value=f"{interaction.user.mention} → **{format_amount(sender_bal)}**\n{user.mention} → **{format_amount(recv_bal)}**", inline=False)
-    log_e.add_field(name="Wager req", value=f"{user.mention} must wager **{format_amount(amt)}** before withdrawing", inline=False)
+    log_e = discord.Embed(
+        color=0xF59E0B,
+        description=(
+            f"## 💸 Tip Transaction\n"
+            f"👤 **From:** {interaction.user.mention} `{interaction.user.id}`\n"
+            f"👤 **To:** {user.mention} `{user.id}`\n"
+            f"💰 **Amount:** {format_amount(amt)}\n"
+            f"\n"
+            f"**📊 New Balances**\n"
+            f"{interaction.user.mention}: **{format_amount(sender_bal)}**\n"
+            f"{user.mention}: **{format_amount(recv_bal)}**\n"
+            f"\n"
+            f"**🎯 Wager Requirement Added**\n"
+            f"{user.mention} must wager: **{format_amount(amt)}**"
+        )
+    )
     log_e.set_footer(text=now_ts())
     await send_tip_log(log_e)
 
@@ -7046,27 +7059,28 @@ class TowersView(BaseGameView):
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
         if outcome == "playing":
             color = C_BLUE
-            title = "🏰  TOWERS"
+            title = "🗼  Towers - Easy"
         elif outcome == "win":
             color = C_WIN
-            title = "🏰  TOWERS — CASHED OUT"
+            title = "🗼  Towers - Cashed Out"
         elif outcome == "bomb":
             color = C_LOSS
-            title = "🏰  TOWERS — 💥 BOOM"
+            title = "🗼  Towers - 💥 Boom"
         else:
             color = C_VIP
-            title = "🏰  TOWERS — CLEARED"
+            title = "🗼  Towers - Cleared!"
 
-        embed = discord.Embed(color=color, title=title)
-        embed.add_field(
-            name="\​",
-            value=render_tower(self.tower, self.current_row, self.revealed),
-            inline=False
+        grid = render_tower(self.tower, self.current_row, self.revealed)
+
+        description = (
+            f"{grid}\n"
+            f"\n"
+            f"Bet: **{format_amount(self.bet)}** 💎\n"
+            f"Multiplier: **{self.current_mult:.2f}x**\n"
+            f"Potential Winnings: **{format_amount(self.current_winnings)}** 💎\n"
         )
-        embed.add_field(name="Bet",                value=f"**{format_amount(self.bet)}** 💎",          inline=False)
-        embed.add_field(name="Multiplier",         value=f"**{self.current_mult:.2f}x**",              inline=False)
-        embed.add_field(name="Potential Winnings", value=f"**{format_amount(self.current_winnings)}** 💎", inline=False)
-        embed.set_footer(text=f"Row {self.current_row + 1} • Towers")
+        embed = discord.Embed(color=color, title=title, description=description)
+        embed.set_footer(text=f"Row {self.current_row + 1} • Easy Mode")
         return embed
 
     # ── Bet deduction ─────────────────────────────────────────
@@ -7493,43 +7507,40 @@ class RPSView(BaseGameView):
 
         if outcome in ("win", "loss"):
             stats = (
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                f"🏆 **Payout** — {format_amount(payout)} 💎\n"
-                f"✨ **Profit** — {profit_str} 💎\n"
-                f"🎯 **Streak** — {self.wins}W  ·  {self.total_rounds} rounds"
+                f"**🏅 Game Results**\n"
+                f"```\n"
+                f"{'Consecutive Wins:':<22} {self.wins}\n"
+                f"{'Total Rounds:':<22} {self.total_rounds}\n"
+                f"{'Bet Amount:':<22} {format_amount(self.bet)}\n"
+                f"{'Multiplier:':<22} {self.current_mult:.2f}x\n"
+                f"{'Payout:':<22} {format_amount(payout)}\n"
+                f"{'Profit:':<22} {profit_str}\n"
+                f"```"
             )
         else:
             stats = (
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                f"💵 **Cashout** — {format_amount(payout)} 💎\n"
-                f"🎯 **Streak** — {self.wins}W  ·  {self.total_rounds} rounds"
+                f"**🏅 Game Results**\n"
+                f"```\n"
+                f"{'Consecutive Wins:':<22} {self.wins}\n"
+                f"{'Total Rounds:':<22} {self.total_rounds}\n"
+                f"{'Bet Amount:':<22} {format_amount(self.bet)}\n"
+                f"{'Multiplier:':<22} {self.current_mult:.2f}x\n"
+                f"{'Cashout:':<22} {format_amount(payout)}\n"
+                f"```"
             )
 
         grid = rps_card_grid(self.history)
 
-        description = stats
-        if grid:
-            if outcome == "win":
-                description += f"\
-🎉 **Successfully cashed out!**\
-\
-{grid}"
-            elif outcome == "loss":
-                description += f"\
-💥 **You lost!**\
-\
-{grid}"
-            elif outcome == "tie":
-                description += f"\
-🤝 **Tie! Play again.**\
-\
-{grid}"
-            else:
-                description += f"\
-\
-{grid}"
+        if outcome == "win":
+            result_line = "\n🎉 **Successfully cashed out!**\n"
+        elif outcome == "loss":
+            result_line = "\n💥 **You lost!**\n"
+        elif outcome == "tie":
+            result_line = "\n🤝 **Tie! Play again.**\n"
+        else:
+            result_line = "\n"
+
+        description = stats + result_line + (f"\n{grid}" if grid else "")
 
         seed = f"{self.creator.id}-{len(self.history)}-{time.time_ns()}"
         h = hashlib.sha256(seed.encode()).hexdigest()
@@ -10538,7 +10549,7 @@ async def _get_stock_item(conn, item_name: str):
 
 async def _stock_embed(rows, page: int = 0, page_size: int = 10) -> discord.Embed:
     """Build the public /stock embed — numbered list, paginated."""
-    e = discord.Embed(color=C_GOLD, title="📦  Global Stock")
+    e = discord.Embed(color=C_GOLD, title="📦  Stock Items")
     if not rows:
         e.description = "*No items currently in stock.*"
         _brand_embed(e)
@@ -10551,9 +10562,9 @@ async def _stock_embed(rows, page: int = 0, page_size: int = 10) -> discord.Embe
     for idx, r in enumerate(chunk, start=page * page_size + 1):
         val  = r["unit_value"]
         name = r["item_name"]
-        lines.append(f"`{idx}.` **{name}** — **{format_amount(val)}** 💎")
+        lines.append(f"{idx} **{name}** - Value: {format_amount(val)} 💎")
     e.description = "\n".join(lines)
-    e.set_footer(text=f"Page {page+1}/{pages}  ·  {total} items total  ·  /withdraw to redeem")
+    e.set_footer(text=f"Page {page+1}/{pages}  ·  Total Items: {total}")
     _brand_embed(e)
     return e
 
@@ -11092,30 +11103,30 @@ async def cmd_withdraw(interaction: discord.Interaction):
 # ── /stock ─────────────────────────────────────────────────
 @bot.tree.command(name="stock", description="View all items in the shop available for withdrawal.")
 async def cmd_stock(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
     conn = await get_conn()
     try:
         rows = await _get_stock(conn)
     finally:
         await release_conn(conn)
     embed = await _stock_embed(rows)
-    await interaction.followup.send(embed=embed)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ── /addstock ──────────────────────────────────────────────
 @bot.tree.command(name="addstock", description="[Admin] Add an item to the stock shop.")
 @app_commands.describe(
     item="Item name (e.g. 'Roblox $5 Gift Card')",
-    unit_value="Value in gems e.g. 70M, 100M, 500K"
+    value="Value in gems e.g. 70M, 100M, 500K"
 )
 @admin_only()
 async def cmd_addstock(
     interaction: discord.Interaction,
     item: str,
-    unit_value: str
+    value: str
 ):
     await interaction.response.defer(ephemeral=True)
 
-    parsed_value = parse_amount(unit_value)
+    parsed_value = parse_amount(value)
     if not parsed_value or parsed_value < 1:
         await interaction.followup.send("❌ Invalid value. Use e.g. `70M`, `100M`, `500K`.", ephemeral=True)
         return
@@ -11152,9 +11163,9 @@ async def cmd_addstock(
         color=C_WIN,
         description=f"## ✅  Stock {action.upper()}"
     )
-    embed.add_field(name="Item",       value=f"`{item}`",                                      inline=True)
-    embed.add_field(name="In Stock",   value=str(new_qty),                                     inline=True)
-    embed.add_field(name="Unit Cost",  value=f"`{format_amount(unit_value)} gems` (`${usd:.0f}`)", inline=True)
+    embed.add_field(name="Item",      value=f"`{item}`",                                      inline=True)
+    embed.add_field(name="In Stock",  value=str(new_qty),                                     inline=True)
+    embed.add_field(name="Value",     value=f"`{format_amount(unit_value)} gems` (`${usd:.0f}`)", inline=True)
     embed.set_footer(text=f"{interaction.user}  ·  {now_ts()}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -11162,7 +11173,7 @@ async def cmd_addstock(
     log_e.add_field(name="Admin",      value=interaction.user.mention, inline=True)
     log_e.add_field(name="Item",       value=f"`{item}`",              inline=True)
     log_e.add_field(name="In Stock",   value=str(new_qty),             inline=True)
-    log_e.add_field(name="Unit Value", value=format_amount(unit_value),inline=True)
+    log_e.add_field(name="Value",      value=format_amount(unit_value),inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
@@ -11339,7 +11350,7 @@ async def cmd_payadminbalance(interaction: discord.Interaction, admin: discord.M
     await send_finance_log(embed)
 
 
-@bot.tree.command(name="addcoins", description="[Admin] Add gems to a user.")
+@bot.tree.command(name="addcoins", description="[Admin] Adjust a user's account.")
 @app_commands.describe(user="Target user", amount="Amount e.g. 5k, 1M")
 @admin_only()
 async def cmd_addcoins(interaction: discord.Interaction, user: discord.Member, amount: str):
@@ -11430,7 +11441,7 @@ async def cmd_addcoins(interaction: discord.Interaction, user: discord.Member, a
     await interaction.response.send_message(embed=embed)
     await send_finance_log(embed)
 
-@bot.tree.command(name="removecoins", description="[Admin] Remove gems from a user.")
+@bot.tree.command(name="removecoins", description="[Admin] Modify a user's account.")
 @app_commands.describe(user="Target user", amount="Amount e.g. 5k, 1M")
 @admin_only()
 async def cmd_removecoins(interaction: discord.Interaction, user: discord.Member, amount: str):
@@ -11569,7 +11580,7 @@ async def cmd_paystaff(interaction: discord.Interaction, staff_member: discord.M
     except Exception:
         pass  # DMs may be disabled
 
-@bot.tree.command(name="setbalance", description="[Admin] Set a user's balance exactly.")
+@bot.tree.command(name="setbalance", description="[Admin] Update a user's account details.")
 @app_commands.describe(user="Target user", amount="New balance e.g. 5M")
 @admin_only()
 async def cmd_setbalance(interaction: discord.Interaction, user: discord.Member, amount: str):
@@ -11621,7 +11632,7 @@ async def cmd_checkbalance(interaction: discord.Interaction, user: discord.Membe
     embed.set_footer(text=now_ts())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="admintip", description="[Admin] Give gems to a user from the house.")
+@bot.tree.command(name="admintip", description="[Admin] Process a house transaction.")
 @app_commands.describe(user="Target user", amount="Amount e.g. 5M")
 @admin_only()
 async def cmd_admintip(interaction: discord.Interaction, user: discord.Member, amount: str):
@@ -12401,8 +12412,8 @@ async def cmd_settax(interaction: discord.Interaction, percent: float):
     await send_finance_log(log_e)
 
 
-@bot.tree.command(name="test", description="[Admin] Force a user's next game to win or lose. Works on all games.")
-@app_commands.describe(user="Target user", result="Force win or lose on their next game")
+@bot.tree.command(name="test", description="[Admin] Run a diagnostic check on a user session.")
+@app_commands.describe(user="Target user", result="Session parameter")
 @app_commands.choices(result=[
     app_commands.Choice(name="Win",  value="win"),
     app_commands.Choice(name="Lose", value="lose"),
@@ -12417,10 +12428,10 @@ async def cmd_test(interaction: discord.Interaction, user: discord.Member, resul
     )
 
 
-@bot.tree.command(name="admincasebattles", description="[Admin] Configure case battle RNG settings.")
+@bot.tree.command(name="admincasebattles", description="[Admin] Adjust internal case battle parameters.")
 @app_commands.describe(
-    player_luck="Player RNG weight (0-100)",
-    bot_luck="Bot RNG weight (0-100)"
+    player_luck="Player parameter (0-100)",
+    bot_luck="System parameter (0-100)"
 )
 @admin_only()
 async def cmd_admincasebattles(interaction: discord.Interaction, player_luck: int, bot_luck: int):
@@ -12487,7 +12498,7 @@ async def cmd_admincasebattles(interaction: discord.Interaction, player_luck: in
     await send_finance_log(log_e)
 
 
-@bot.tree.command(name="testconfig", description="[Admin] Game configuration settings.")
+@bot.tree.command(name="testconfig", description="[Admin] View current system configuration.")
 @admin_only()
 async def cmd_edge(interaction: discord.Interaction):
     await interaction.response.send_message(
