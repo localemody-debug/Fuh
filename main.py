@@ -7943,8 +7943,7 @@ class MinesView(BaseGameView):
         if outcome == "loss":
             stats = (
                 f"## 💥  MINES — BOOM!\n"
-                f"┌─────────────────────────┐\n"
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
+                f"┌─────────────────────────┐\n"                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
                 f"💣 **Mines** — {self.mines}\n"
                 f"💎 **Found** — {self.gems_found}/{gems_total}\n"
                 f"❌ **Lost** — {format_amount(self.bet)} 💎"
@@ -15089,6 +15088,10 @@ class CaseBattleSetupView(discord.ui.View):
             if isinstance(item, discord.ui.Button) and item.disabled:
                 item.label = f"Cases: {self.num_cases}"
 
+    async def on_timeout(self):
+        """User closed the ephemeral panel without confirming — release their game session."""
+        _end_game_session(self.creator.id)
+
     @discord.ui.button(label="✅  Confirm & Pay", style=discord.ButtonStyle.green, row=3)
     async def btn_confirm(self, interaction: discord.Interaction, btn: discord.ui.Button):
         if interaction.user.id != self.creator.id:
@@ -15137,6 +15140,10 @@ class CaseBattleSetupView(discord.ui.View):
             return
         finally:
             await release_conn(conn)
+
+        # Release the setup session — the lobby view runs independently
+        _end_game_session(interaction.user.id)
+        self.stop()
 
         lobby_view = CaseBattleLobbyView(
             battle_id=battle_id, creator=interaction.user,
