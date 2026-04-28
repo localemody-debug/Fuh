@@ -1,7 +1,7 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                    RBXFLIP  —  PART 1 OF 2                    ║
+# ║                    BLOXYSAB  —  PART 1 OF 2                    ║
 # ║  Paste this file first, then immediately paste Part 2 below. ║
-# ║  UI REVAMP: embeds match Rbxflip style          ║
+# ║  UI REVAMP: embeds match bloxysab style          ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 import discord
@@ -27,7 +27,7 @@ except ImportError:
     pass
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║               RBXFLIP — SETUP NOTES               ║
+# ║               BLOXYSAB — SETUP NOTES               ║
 # ║                                                              ║
 # ║  REQUIRED env variables (must set or bot won't start):      ║
 # ║    TOKEN        — Discord bot token                          ║
@@ -112,20 +112,18 @@ GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set 
 # Global connection pool — created once in on_ready
 _pool: asyncpg.Pool = None
 
-# Rank thresholds in internal units wagered (100 units = 1 pt = $0.01)
+# Rank thresholds in gems wagered (1 unit = 1 gem)
 RANK_DATA = [
-    # (min_wagered_units, max_wagered_units, emoji, name, color_hex)
-    # 100 internal units = 1 gem displayed. Thresholds below are in units.
-    # 10M gems  = 1_000_000_000 units
-    (0,                   1_000_000_000,     "🥉", "Bronze",      0xCD7F32),   # 0 – 10M gems
-    (1_000_000_000,       5_000_000_000,     "🥈", "Silver",      0xC0C0C0),   # 10M – 50M
-    (5_000_000_000,       20_000_000_000,    "🥇", "Gold",        0xFFD700),   # 50M – 200M
-    (20_000_000_000,      60_000_000_000,    "💿", "Platinum",    0xE5E4E2),   # 200M – 600M
-    (60_000_000_000,      150_000_000_000,   "🔴", "Ruby",        0x9B111E),   # 600M – 1.5B
-    (150_000_000_000,     300_000_000_000,   "💚", "Emerald",     0x50C878),   # 1.5B – 3B
-    (300_000_000_000,     500_000_000_000,   "🎰", "High Roller", 0xFF6600),   # 3B – 5B
-    (500_000_000_000,     1_000_000_000_000, "🐋", "Whale",       0x1E90FF),   # 5B – 10B
-    (1_000_000_000_000,   10**18,            "🏆", "Legend",      0xFFD700),   # 15B+
+    # (min_wagered, max_wagered, emoji, name, color_hex)
+    (0,                10_000_000,   "🥉", "Bronze",      0xCD7F32),   # 0 – 10M gems
+    (10_000_000,       50_000_000,   "🥈", "Silver",      0xC0C0C0),   # 10M – 50M
+    (50_000_000,       200_000_000,  "🥇", "Gold",        0xFFD700),   # 50M – 200M
+    (200_000_000,      600_000_000,  "💿", "Platinum",    0xE5E4E2),   # 200M – 600M
+    (600_000_000,      1_500_000_000,"🔴", "Ruby",        0x9B111E),   # 600M – 1.5B
+    (1_500_000_000,    3_000_000_000,"💚", "Emerald",     0x50C878),   # 1.5B – 3B
+    (3_000_000_000,    5_000_000_000,"🎰", "High Roller", 0xFF6600),   # 3B – 5B
+    (5_000_000_000,   10_000_000_000,"🐋", "Whale",       0x1E90FF),   # 5B – 10B
+    (10_000_000_000,  10**18,        "🏆", "Legend",      0xFFD700),   # 10B+
 ]
 
 # Leaderboard-only roles — awarded by hourly rank loop, NOT shown in /rank wager display
@@ -133,7 +131,7 @@ CHAMPION_ROLE     = "👑 Champion"      # Top 1 on leaderboard
 DIAMOND_WHALE_ROLE = "💎 Diamond Whale" # Top 2–3 on leaderboard
 MEMBER_ROLE_NAME     = "Member"          # Manually assigned after verification
 UNVERIFIED_ROLE_NAME = "Unverified"      # Auto-assigned to everyone on join
-BOT_ROLE_NAME        = "Rbxflip"        # Top-level bot management role — sits above all casino roles
+BOT_ROLE_NAME        = "bloxysab"        # Top-level bot management role — sits above all casino roles
 VERIFIED_ROLE_NAME   = "Verified"       # Auto-created verified role
 
 CARD_EMOJIS = {
@@ -201,9 +199,9 @@ def check_cooldown(command: str, user_id: int) -> float:
     return 0
 
 # ─── Bet limits ───────────────────────────────────────────────
-MAX_BET    = 75_000_000_000   # 750M gems display
-MAX_PAYOUT = 165_000_000_000  # 1.65B gems display
-MIN_BET    = 10_000_000   # 100K gems display
+MAX_BET    = 750_000_000   # 750M gems
+MAX_PAYOUT = 1_650_000_000 # 1.65B gems
+MIN_BET    = 100_000       # 100K gems
 
 # ── Game lock system ───────────────────────────────────────────
 # Set of game names currently locked to staff/admin/owner only
@@ -245,7 +243,7 @@ def is_game_locked(game_key: str, member) -> bool:
 
 # ─── Daily reward ─────────────────────────────────────────────
 DAILY_MIN = 1          # 1 gem
-DAILY_MAX = 1_000_000_000 # 10M gems display
+DAILY_MAX = 10_000_000 # 10M gems
 
 # ─── Invite tracking cache ────────────────────────────────────
 _invite_cache: dict[int, dict[str, int]] = {}
@@ -257,23 +255,21 @@ SUFFIXES = [
     (1_000_000,         "M"),
     (1_000,             "K"),
 ]
-# Internal unit: 1 display point = 100 internal units (hundredths)
-# e.g. 1.98 gems stored as 198, 5 gems stored as 500
-POINT_SCALE = 100
+# Internal unit: 1 internal unit = 1 gem displayed (1:1 scale)
+POINT_SCALE = 1
 
 def parse_amount(text: str) -> Optional[int]:
-    """Parse a point amount from user input. Supports decimals (1.98), integers (5),
-    and suffixes (1K, 2.5M). Internally stores as hundredths-of-a-point so
-    1.98 = 198, 5 = 500, 100 = 10000. Min resolution: 0.01 gems."""
+    """Parse a gem amount from user input. Supports integers (5), K/M/B/T suffixes (1K, 2.5M).
+    1 internal unit = 1 gem displayed."""
     if not text:
         return None
     text = text.strip().upper().replace(",", "")
     multipliers = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000, "T": 1_000_000_000_000}
     try:
         if text[-1] in multipliers:
-            val = round(float(text[:-1]) * multipliers[text[-1]] * 100)
+            val = int(float(text[:-1]) * multipliers[text[-1]])
         else:
-            val = round(float(text) * 100)
+            val = int(float(text))
         return val if val > 0 else None
     except (ValueError, IndexError):
         return None
@@ -282,7 +278,7 @@ def parse_amount(text: str) -> Optional[int]:
 # ║                VORTEX  ·  DESIGN SYSTEM  v2                 ║
 # ╚══════════════════════════════════════════════════════════════╝
 # PALETTE — deep jewel tones, high contrast
-C_GOLD   = 0xA855F7   # neon purple   — brand (Rbxflip logo)
+C_GOLD   = 0xA855F7   # neon purple   — brand (bloxysab logo)
 C_WIN    = 0x7C3AED   # deep violet   — win
 C_LOSS   = 0xFC3D5F   # crimson       — loss
 C_PUSH   = 0x6D28D9   # indigo        — push/tie
@@ -291,10 +287,10 @@ C_VIP    = 0xE879F9   # neon magenta  — VIP
 C_WARN   = 0xF59E0B   # amber         — warning
 C_DARK   = 0x1A1025   # deep dark     — inactive
 
-CASINO_MARK = "RBXFLIP  ╱  rbxflip.gg"
-# LOGO_URL: Upload your Rbxflip logo to Discord, right-click → Copy Link, paste below
+CASINO_MARK = "BLOXYSAB  ╱  bloxysab.gg"
+# LOGO_URL: Upload your bloxysab logo to Discord, right-click → Copy Link, paste below
 # OR set env var LOGO_URL to that URL
-LOGO_URL = os.getenv("LOGO_URL", "")  # Paste your Rbxflip logo URL here or set LOGO_URL env var
+LOGO_URL = os.getenv("LOGO_URL", "")  # Paste your bloxysab logo URL here or set LOGO_URL env var
 # ── Coinflip GIF URLs ────────────────────────────────────────────────────────
 # HOW TO GET YOUR GIF URLs:
 #   1. Go to any Discord server or DM
@@ -329,8 +325,8 @@ def get_dice_gif(roll: int) -> str:
 
 
 def _brand_embed(embed: discord.Embed) -> discord.Embed:
-    """Apply Rbxflip branding: logo as small author icon + footer."""
-    embed.set_author(name="✦ RBXFLIP", icon_url=LOGO_URL if LOGO_URL else None)
+    """Apply bloxysab branding: logo as small author icon + footer."""
+    embed.set_author(name="✦ BLOXYSAB", icon_url=LOGO_URL if LOGO_URL else None)
     embed.set_footer(text=CASINO_MARK)
     return embed
 
@@ -428,20 +424,18 @@ async def get_avatar(user: discord.User | discord.Member) -> str:
     return roblox if roblox else user.display_avatar.url
 
 def format_amount(n: int) -> str:
-    """Format an internal hundredths value back to display gems.
-    198 → '1.98', 500 → '5', 10000 → '100', 150000 → '1.5K'"""
+    """Format an internal value as display gems. 1 internal unit = 1 gem.
+    1000 → '1K', 1500000 → '1.5M', 1000000000 → '1B'"""
     if n < 0:
         return f"-{format_amount(-n)}"
-    display = n / 100
+    display = n
     for threshold, suffix in SUFFIXES:
         if display >= threshold:
             val = display / threshold
             if val == int(val):
                 return f"{int(val)}{suffix}"
             return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
-    if display == int(display):
-        return str(int(display))
-    return f"{display:.2f}".rstrip("0").rstrip(".")
+    return str(int(display))
 
 def progress_bar(current: int, maximum: int, length: int = 12) -> str:
     if maximum == math.inf or maximum == 0:
@@ -1198,9 +1192,9 @@ async def ensure_bot_role(guild: discord.Guild) -> discord.Role | None:
             owner = guild.owner
             if owner:
                 embed = discord.Embed(
-                    title="✦  RBXFLIP — Action Required",
+                    title="✦  BLOXYSAB — Action Required",
                     description=(
-                        f"Rbxflip has created the **{BOT_ROLE_NAME}** role.\n\n"
+                        f"bloxysab has created the **{BOT_ROLE_NAME}** role.\n\n"
                         f"**Action needed:** Move **{BOT_ROLE_NAME}** to the "
                         f"**top of your role list** in Server Settings → Roles so the bot can "
                         f"manage all roles properly.\n\n"
@@ -2299,7 +2293,7 @@ async def cmd_link(interaction: discord.Interaction, username: str):
             f"`ID: {roblox_id}`\n\n"
             f"─────────────────────────────\n"
             f"Your Roblox avatar will appear on all game embeds.\n"
-            f"You can now use all Rbxflip commands! ✦"
+            f"You can now use all bloxysab commands! ✦"
         ),
         color=C_GOLD
     )
@@ -4833,11 +4827,11 @@ class RouletteView(BaseGameView):
         # Fast phase: 12 frames, 0.12s each
         for frame in range(12):
             pos    = frame % BAR_LENGTH
-            bar    = " ".join(SLOT_COLORS)
-            spacer = "   " * pos + POINTER
+            slots  = list(SLOT_COLORS)
+            slots[pos] = f"{SLOT_COLORS[pos]} {POINTER}"
+            bar    = " ".join(slots)
             e = discord.Embed(title="◉  SPINNING...", color=C_GOLD)
-            e.add_field(name="\​", value=f"{bar}\
-{spacer}", inline=False)
+            e.add_field(name="\​", value=bar, inline=False)
             try:
                 await msg.edit(embed=e)
             except Exception as e:
@@ -4849,11 +4843,11 @@ class RouletteView(BaseGameView):
         # Slow-down phase: 6 frames, increasing delay
         for i, delay in enumerate([0.2, 0.3, 0.4, 0.5, 0.6, 0.7]):
             pos    = (12 + i) % BAR_LENGTH
-            bar    = " ".join(SLOT_COLORS)
-            spacer = "   " * pos + POINTER
+            slots  = list(SLOT_COLORS)
+            slots[pos] = f"{SLOT_COLORS[pos]} {POINTER}"
+            bar    = " ".join(slots)
             e = discord.Embed(title="◉  SLOWING...", color=C_GOLD)
-            e.add_field(name="\​", value=f"{bar}\
-{spacer}", inline=False)
+            e.add_field(name="\​", value=bar, inline=False)
             try:
                 await msg.edit(embed=e)
             except Exception as e:
@@ -6588,7 +6582,7 @@ class HiloView(BaseGameView):
     def next_winnings(self) -> int:
         return int(self.bet * self.next_mult)
 
-    # ── Embed builder (matches Rbxflip embed style) ──────
+    # ── Embed builder (matches bloxysab embed style) ──────
     def game_embed(self) -> discord.Embed:
         at_cap   = self.current_mult >= HILO_MAX_MULT
         card_str = hilo_card_str(self.current_card)
@@ -6630,7 +6624,7 @@ class HiloView(BaseGameView):
     # ── Bet deduction ─────────────────────────────────────────
 
 # ═══════════════════════════════════════════════════════════
-# RBXFLIP — PART 2 CONTINUES
+# BLOXYSAB — PART 2 CONTINUES
 # ═══════════════════════════════════════════════════════════
 
 
@@ -6987,7 +6981,7 @@ def generate_tower() -> list[list[str]]:
 
 def render_tower(tower: list, current_row: int, revealed: dict) -> str:
     """
-    Render tower from top to bottom matching Rbxflip style.
+    Render tower from top to bottom matching bloxysab style.
     Revealed rows show picked tile (✅/❌) and hide others as ⬛.
     Current row shows ⬛ ⬛ ⬛ (pickable).
     Future rows show ⬛ ⬛ ⬛.
@@ -7403,7 +7397,7 @@ def rps_cumulative_mult(wins: int) -> float:
 
 def rps_card_grid(history: list) -> str:
     """
-    Render card-style grid matching Rbxflip UI.
+    Render card-style grid matching bloxysab UI.
     Top row = player moves, bottom row = bot moves.
     Each cell is a framed card with move label and multiplier badge below.
     """
@@ -7757,7 +7751,7 @@ class RPSView(BaseGameView):
         await self._cashout(interaction)
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║                    RBXFLIP  —  PART 2 OF 2                    ║
+# ║                    BLOXYSAB  —  PART 2 OF 2                    ║
 # ║  Paste this DIRECTLY below Part 1 in the same file.          ║
 # ║  UI REVAMP + Message Rewards: 500 msgs = 25M gems 💎         ║
 # ║  Spam warning: once per 15 minutes (not every 2 minutes)     ║
@@ -8231,11 +8225,11 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
 
 
 # ═════════════════════════════════════════════════════════
-# RBXFLIP — PART 1 OF 2
+# BLOXYSAB — PART 1 OF 2
 # Paste Part 2 directly below this line in the same file
 # ═════════════════════════════════════════════════════════
 # ═════════════════════════════════════════════════════════
-# RBXFLIP — PART 2 OF 2
+# BLOXYSAB — PART 2 OF 2
 # Paste directly below Part 1 — no imports needed
 # ═════════════════════════════════════════════════════════
 
@@ -10508,7 +10502,7 @@ async def cmd_invitestats(interaction: discord.Interaction):
 
 
 # Coins per dollar (used by stock price display)
-COINS_PER_DOLLAR = 10_000  # 10,000 gems = $1
+COINS_PER_DOLLAR = 10_000  # 10,000 gems = $1 (1 gem = $0.0001)
 
 async def ensure_user_by_id(conn, user_id_str: str):
     """Ensure a user row exists by ID string (no Member object needed)."""
@@ -10544,7 +10538,7 @@ async def _get_stock_item(conn, item_name: str):
 
 async def _stock_embed(rows, page: int = 0, page_size: int = 10) -> discord.Embed:
     """Build the public /stock embed — numbered list, paginated."""
-    e = discord.Embed(color=C_GOLD, title="📦  Withdrawal Shop")
+    e = discord.Embed(color=C_GOLD, title="📦  Global Stock")
     if not rows:
         e.description = "*No items currently in stock.*"
         _brand_embed(e)
@@ -10866,10 +10860,24 @@ async def cmd_withdraw(interaction: discord.Interaction):
         user_row   = await get_user(conn, interaction.user.id)
         bal        = user_row["balance"] if user_row else 0
 
+        # ── Wager requirement check ────────────────────────────────────────
+        wr_row = await conn.fetchrow(
+            "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
+            str(interaction.user.id)
+        )
+        if wr_row and not wr_row["req_met"]:
+            remaining = wr_row["required_amt"] - wr_row["wagered_so_far"]
+            await interaction.followup.send(
+                f"❌ You have a pending wager requirement of **{format_amount(remaining)} 💎** before you can withdraw.\n"
+                f"Progress: **{format_amount(wr_row['wagered_so_far'])} / {format_amount(wr_row['required_amt'])}**",
+                ephemeral=True
+            )
+            return
+
         if bal < total_cost:
             needed_usd = total_cost / COINS_PER_DOLLAR
             await interaction.followup.send(
-                f"❌ You need **{format_amount(total_cost)} gems** (`${needed_usd:.2f}`) "
+                f"❌ You need **{format_amount(total_cost)} gems** (`${needed_usd:.0f}`) "
                 f"but only have **{format_amount(bal)} gems**.",
                 ephemeral=True
             )
@@ -11009,6 +11017,38 @@ async def cmd_withdraw(interaction: discord.Interaction):
             except Exception as log_ex:
                 print(f"[WITHDRAW LOG] Could not post to withdraws: {log_ex}")
 
+            # Also post to public withdrawals channel
+            try:
+                public_wd_ch = discord.utils.get(guild.text_channels, name="📤｜withdrawals")
+                if not public_wd_ch:
+                    # Try to find or create withdrawals channel
+                    for ch in guild.text_channels:
+                        if "withdrawal" in ch.name.lower():
+                            public_wd_ch = ch
+                            break
+                if not public_wd_ch:
+                    # Auto-create the withdrawals channel
+                    public_wd_ch = await guild.create_text_channel(
+                        name="📤｜withdrawals",
+                        reason="Auto-created for withdrawal notifications"
+                    )
+                if public_wd_ch:
+                    pub_wd_e = discord.Embed(
+                        color=0x5865F2,
+                        description=(
+                            f"## 📤  WITHDRAWAL SUBMITTED\n\n"
+                            f"**{interaction.user.mention}** just submitted a withdrawal!\n\n"
+                            f"**Item:** {item} ×{quantity}\n"
+                            f"**Value:** {format_amount(total_cost)} 💎\n"
+                            f"**Ticket:** {thread.mention if thread else f'#{ticket_id}'}"
+                        )
+                    )
+                    pub_wd_e.set_thumbnail(url=await get_avatar(interaction.user))
+                    _brand_embed(pub_wd_e)
+                    await public_wd_ch.send(embed=pub_wd_e)
+            except Exception as pub_ex:
+                print(f"[WITHDRAW PUBLIC LOG] {pub_ex}")
+
         except Exception as ex:
             print(f"[WITHDRAW TICKET] Thread creation failed: {ex}")
             thread = None
@@ -11029,7 +11069,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
     reply_e.add_field(name="Item",      value=f"`{item}`",                  inline=True)
     reply_e.add_field(name="Quantity",  value=str(quantity),                inline=True)
     reply_e.add_field(name="Cost",      value=f"`{format_amount(total_cost)} gems`", inline=True)
-    reply_e.add_field(name="USD",       value=f"`${usd_val:.2f}`",          inline=True)
+    reply_e.add_field(name="USD",       value=f"`${usd_val:.0f}`",          inline=True)
     reply_e.add_field(name="Ticket ID", value=f"`#{ticket_id}`",            inline=True)
     _brand_embed(reply_e)
 
@@ -11041,7 +11081,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
     log_e.add_field(name="Item",      value=f"`{item}`",                    inline=True)
     log_e.add_field(name="Qty",       value=str(quantity),                  inline=True)
     log_e.add_field(name="Cost",      value=format_amount(total_cost),      inline=True)
-    log_e.add_field(name="USD",       value=f"${usd_val:.2f}",              inline=True)
+    log_e.add_field(name="USD",       value=f"${usd_val:.0f}",              inline=True)
     log_e.add_field(name="Ticket",    value=f"#{ticket_id}",                inline=True)
     if thread:
         log_e.add_field(name="Thread", value=thread.mention,                inline=False)
@@ -11114,7 +11154,7 @@ async def cmd_addstock(
     )
     embed.add_field(name="Item",       value=f"`{item}`",                                      inline=True)
     embed.add_field(name="In Stock",   value=str(new_qty),                                     inline=True)
-    embed.add_field(name="Unit Cost",  value=f"`{format_amount(unit_value)} gems` (`${usd:.2f}`)", inline=True)
+    embed.add_field(name="Unit Cost",  value=f"`{format_amount(unit_value)} gems` (`${usd:.0f}`)", inline=True)
     embed.set_footer(text=f"{interaction.user}  ·  {now_ts()}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -11422,6 +11462,113 @@ async def cmd_removecoins(interaction: discord.Interaction, user: discord.Member
     await interaction.response.send_message(embed=embed)
     await send_finance_log(embed)
 
+
+@bot.tree.command(name="paystaff", description="[Owner] Pay a staff member 10% of their total added coins as a bonus.")
+@app_commands.describe(staff_member="The staff member to pay (t-Mod, Moderator, Admin, or Manager)")
+@owner_only()
+async def cmd_paystaff(interaction: discord.Interaction, staff_member: discord.Member):
+    """
+    Pays 10% of the total coins the staff member added (their admin_balance 'used' amount)
+    into their normal balance, then resets their used amount to 0.
+    Only usable on t-Mod, Moderator, Admin, or Manager roles.
+    """
+    ELIGIBLE_ROLES = {TMOD_ROLE_NAME, STAFF_ROLE_NAME, ADMIN_ROLE_NAME, MANAGER_ROLE_NAME}
+    member_roles   = {r.name for r in staff_member.roles}
+
+    if not ELIGIBLE_ROLES.intersection(member_roles):
+        await interaction.response.send_message(
+            f"❌ {staff_member.mention} must have one of these roles: "
+            f"**t-Mod**, **Moderator**, **Admin**, or **Manager**.",
+            ephemeral=True
+        )
+        return
+
+    conn = await get_conn()
+    try:
+        await ensure_user(conn, staff_member)
+
+        # Fetch how much this staff member added via addcoins (tracked in admin_balances.used)
+        ab_row = await conn.fetchrow(
+            "SELECT insurance, used FROM admin_balances WHERE admin_id=$1",
+            str(staff_member.id)
+        )
+
+        if not ab_row or ab_row["used"] <= 0:
+            await interaction.response.send_message(
+                f"❌ {staff_member.mention} has no recorded coins added. "
+                f"They need to use `/addcoins` first so their contribution is tracked.",
+                ephemeral=True
+            )
+            return
+
+        total_added = ab_row["used"]
+        bonus       = int(total_added * 0.10)   # 10% of what they added
+
+        if bonus <= 0:
+            await interaction.response.send_message(
+                f"❌ The 10% bonus on {format_amount(total_added)} is too small to pay out.",
+                ephemeral=True
+            )
+            return
+
+        # Pay bonus into their normal balance
+        old_bal = (await get_user(conn, staff_member.id))["balance"]
+        await update_balance(conn, staff_member.id, bonus)
+        new_bal = (await get_user(conn, staff_member.id))["balance"]
+
+        # Reset used amount (the 'debt' is cleared — insurance stays the same)
+        await conn.execute(
+            "UPDATE admin_balances SET used=0, last_updated=$1 WHERE admin_id=$2",
+            now_ts(), str(staff_member.id)
+        )
+
+        await log_transaction(
+            conn, staff_member.id, "paystaff_bonus", bonus,
+            f"10% staff pay on {format_amount(total_added)} added — by {interaction.user.id}"
+        )
+    finally:
+        await release_conn(conn)
+
+    embed = discord.Embed(
+        title="💸  Staff Pay — 10% Bonus",
+        color=C_WIN,
+        description=(
+            f"{staff_member.mention} has been paid their weekly staff bonus!\n\n"
+            f"```diff\n"
+            f"+ {format_amount(bonus)} gems (10% bonus)\n"
+            f"# Total coins added this period: {format_amount(total_added)}\n"
+            f"```"
+        )
+    )
+    embed.add_field(name="Staff",         value=staff_member.mention,        inline=True)
+    embed.add_field(name="Coins Added",   value=format_amount(total_added),  inline=True)
+    embed.add_field(name="Bonus (10%)",   value=format_amount(bonus),        inline=True)
+    embed.add_field(name="Old Balance",   value=format_amount(old_bal),      inline=True)
+    embed.add_field(name="New Balance",   value=format_amount(new_bal),      inline=True)
+    embed.add_field(name="Paid By",       value=interaction.user.mention,    inline=True)
+    embed.set_footer(text=now_ts())
+    _brand_embed(embed)
+    await interaction.response.send_message(embed=embed)
+    await send_finance_log(embed)
+
+    # DM the staff member
+    try:
+        dm_e = discord.Embed(
+            title="💸  You've Been Paid!",
+            color=C_WIN,
+            description=(
+                f"**{interaction.user}** just paid your weekly staff bonus!\n\n"
+                f"**Coins you added this period:** {format_amount(total_added)}\n"
+                f"**Your 10% bonus:** +{format_amount(bonus)} 💎\n"
+                f"**New balance:** {format_amount(new_bal)} 💎\n\n"
+                f"Keep up the great work! 🎉"
+            )
+        )
+        _brand_embed(dm_e)
+        await staff_member.send(embed=dm_e)
+    except Exception:
+        pass  # DMs may be disabled
+
 @bot.tree.command(name="setbalance", description="[Admin] Set a user's balance exactly.")
 @app_commands.describe(user="Target user", amount="New balance e.g. 5M")
 @admin_only()
@@ -11601,7 +11748,7 @@ async def cmd_dmannouncement(
     }
     embed_color = color_map.get(color.lower(), C_GOLD)
     embed = discord.Embed(title=f"📣 {title}", description=message, color=embed_color)
-    embed.set_footer(text=f"Rbxflip  ·  {now_ts()}")
+    embed.set_footer(text=f"bloxysab  ·  {now_ts()}")
     if interaction.guild and interaction.guild.icon:
         embed.set_thumbnail(url=interaction.guild.icon.url)
 
@@ -11970,7 +12117,7 @@ async def cmd_audit(interaction: discord.Interaction, admin: Optional[discord.Me
         await interaction.followup.send("⚠️  Something went wrong — try again.", ephemeral=True)
 
 
-@bot.tree.command(name="adminstats", description="[Admin] Rbxflip performance dashboard — house profit, game breakdown, tax collected.")
+@bot.tree.command(name="adminstats", description="[Admin] bloxysab performance dashboard — house profit, game breakdown, tax collected.")
 @admin_only()
 async def cmd_adminstats(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -12012,7 +12159,7 @@ async def cmd_adminstats(interaction: discord.Interaction):
     tax_rate        = float(tax_rate_row["value"]) if tax_rate_row else 0.12
     house_profit    = total_deposited - in_circulation
 
-    embed = discord.Embed(title="✦  Rbxflip — Dashboard", color=C_GOLD)
+    embed = discord.Embed(title="✦  bloxysab — Dashboard", color=C_GOLD)
     embed.add_field(name="👥 Total Users",        value=f"{total_users:,}",                    inline=True)
     embed.add_field(name="💎 In Circulation",     value=format_amount(in_circulation),         inline=True)
     embed.add_field(name="📥 Total Deposited",    value=format_amount(total_deposited),        inline=True)
@@ -12204,7 +12351,7 @@ async def cmd_provablyfair(interaction: discord.Interaction, game_id: str):
         return
 
     # Fully revealed — show everything
-    name = pf.get("game_name", "Rbxflip Game")
+    name = pf.get("game_name", "bloxysab Game")
     embed = pf_reveal_embed(pf, name)
     embed.description += (
         "\n\n**How to verify yourself:**\n"
@@ -12844,7 +12991,7 @@ async def global_link_check(interaction: discord.Interaction) -> bool:
     e = discord.Embed(
         title="🔗  Link Required",
         description=(
-            "You must link your **Roblox account** before using any Rbxflip commands.\n\n"
+            "You must link your **Roblox account** before using any bloxysab commands.\n\n"
             "> Use `/link <username>` to connect your Roblox account.\n"
             "> Your Roblox avatar will appear on all game embeds once linked!"
         ),
@@ -12908,7 +13055,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # Balance checked after every game via check_vip_balance()
 # Drop below 75M → warning in channel → 5 min to recover → auto delete
 
-VIP_MIN_BALANCE   = 7_000_000_000   # 70M gems required to create/keep a VIP room
+VIP_MIN_BALANCE   = 70_000_000   # 70M gems required to create/keep a VIP room
 VIP_WARN_MINUTES  = 5               # minutes before deletion after warning
 VIP_CATEGORY_NAME = "👑 VIP"        # Same category as the VIP lounge — rooms created here too
 
@@ -13227,7 +13374,7 @@ async def cmd_removeviproom(interaction: discord.Interaction, user: discord.Memb
 # ADMIN: UPDATE LOG
 # ═══════════════════════════════════════════════════════════
 
-class UpdateModal(discord.ui.Modal, title="✦ Rbxflip — Update Log"):
+class UpdateModal(discord.ui.Modal, title="✦ bloxysab — Update Log"):
     added = discord.ui.TextInput(
         label="🆕 New Features Added",
         placeholder="Added /colordice game\
@@ -13296,11 +13443,11 @@ Improved mines multipliers",
 ".join(sections)
 
         embed = discord.Embed(
-            title=f"🎰 Rbxflip Update — {self.version}",
+            title=f"🎰 bloxysab Update — {self.version}",
             description=description,
             color=C_WIN
         )
-        embed.set_author(name="Rbxflip Update Log", icon_url=interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None)
+        embed.set_author(name="bloxysab Update Log", icon_url=interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None)
         embed.set_footer(text=f"Posted by {interaction.user.display_name} • {now_ts()}")
 
         await self.channel.send(embed=embed)
@@ -13523,47 +13670,47 @@ async def cmd_clearsync(interaction: discord.Interaction):
 
 import hashlib
 
-QUEST_MIN_BET  = 100       # Minimum bet for a game to count toward quests
-QUEST_DAY_CAP  = 1_000_000_000  # 10M gems display max earnable from quests per day
+QUEST_MIN_BET  = 100_000   # 100K gems minimum bet for quest to count
+QUEST_DAY_CAP  = 9_000_000  # 9M gems max earnable from quests per day (3 quests × 3M max)
 
 # Each quest has a "reward" in gems. The 3 daily quests are picked so their
 # combined reward never exceeds QUEST_DAY_CAP (enforced in get_daily_quests).
 QUEST_POOL = [
     # ── play quests ──────────────────────────────────────────────────────────
-    {"id": "play_coinflip_3",  "desc": "Play 3 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 3,  "reward": 500_000},
-    {"id": "play_coinflip_5",  "desc": "Play 5 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 5,  "reward": 800_000},
-    {"id": "play_mines_3",     "desc": "Play 3 Mines games",          "type": "play",   "game": "mines",     "target": 3,  "reward": 600_000},
-    {"id": "play_mines_5",     "desc": "Play 5 Mines games",          "type": "play",   "game": "mines",     "target": 5,  "reward": 900_000},
-    {"id": "play_blackjack_3", "desc": "Play 3 Blackjack games",      "type": "play",   "game": "blackjack", "target": 3,  "reward": 500_000},
-    {"id": "play_blackjack_5", "desc": "Play 5 Blackjack games",      "type": "play",   "game": "blackjack", "target": 5,  "reward": 750_000},
-    {"id": "play_roulette_3",  "desc": "Play 3 Roulette games",       "type": "play",   "game": "roulette",  "target": 3,  "reward": 500_000},
-    {"id": "play_dice_3",      "desc": "Play 3 Dice games",           "type": "play",   "game": "dice",      "target": 3,  "reward": 400_000},
-    {"id": "play_dice_5",      "desc": "Play 5 Dice games",           "type": "play",   "game": "dice",      "target": 5,  "reward": 650_000},
-    {"id": "play_hilo_5",      "desc": "Play 5 HiLo games",           "type": "play",   "game": "hilo",      "target": 5,  "reward": 600_000},
-    {"id": "play_any_5",       "desc": "Play 5 games (any)",          "type": "play",   "game": "any",       "target": 5,  "reward": 400_000},
-    {"id": "play_any_10",      "desc": "Play 10 games (any)",         "type": "play",   "game": "any",       "target": 10, "reward": 700_000},
-    {"id": "play_upgrader_3",  "desc": "Play 3 Upgrader games",       "type": "play",   "game": "upgrader",  "target": 3,  "reward": 600_000},
-    {"id": "play_baccarat_3",  "desc": "Play 3 Baccarat games",       "type": "play",   "game": "baccarat",  "target": 3,  "reward": 500_000},
-    {"id": "play_horserace_2", "desc": "Play 2 Horse Race games",     "type": "play",   "game": "horserace", "target": 2,  "reward": 400_000},
-    {"id": "play_slots_5",     "desc": "Play 5 Slots games",          "type": "play",   "game": "slots",     "target": 5,  "reward": 600_000},
-    {"id": "play_towers_3",    "desc": "Play 3 Towers games",         "type": "play",   "game": "towers",    "target": 3,  "reward": 550_000},
-    {"id": "play_balloon_3",   "desc": "Play 3 Balloon games",        "type": "play",   "game": "balloon",   "target": 3,  "reward": 500_000},
+    {"id": "play_coinflip_3",  "desc": "Play 3 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 3,  "reward": 1_000_000},
+    {"id": "play_coinflip_5",  "desc": "Play 5 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 5,  "reward": 1_500_000},
+    {"id": "play_mines_3",     "desc": "Play 3 Mines games",          "type": "play",   "game": "mines",     "target": 3,  "reward": 1_200_000},
+    {"id": "play_mines_5",     "desc": "Play 5 Mines games",          "type": "play",   "game": "mines",     "target": 5,  "reward": 1_800_000},
+    {"id": "play_blackjack_3", "desc": "Play 3 Blackjack games",      "type": "play",   "game": "blackjack", "target": 3,  "reward": 1_000_000},
+    {"id": "play_blackjack_5", "desc": "Play 5 Blackjack games",      "type": "play",   "game": "blackjack", "target": 5,  "reward": 1_500_000},
+    {"id": "play_roulette_3",  "desc": "Play 3 Roulette games",       "type": "play",   "game": "roulette",  "target": 3,  "reward": 1_000_000},
+    {"id": "play_dice_3",      "desc": "Play 3 Dice games",           "type": "play",   "game": "dice",      "target": 3,  "reward": 1_000_000},
+    {"id": "play_dice_5",      "desc": "Play 5 Dice games",           "type": "play",   "game": "dice",      "target": 5,  "reward": 1_500_000},
+    {"id": "play_hilo_5",      "desc": "Play 5 HiLo games",           "type": "play",   "game": "hilo",      "target": 5,  "reward": 1_200_000},
+    {"id": "play_any_5",       "desc": "Play 5 games (any)",          "type": "play",   "game": "any",       "target": 5,  "reward": 1_000_000},
+    {"id": "play_any_10",      "desc": "Play 10 games (any)",         "type": "play",   "game": "any",       "target": 10, "reward": 1_800_000},
+    {"id": "play_upgrader_3",  "desc": "Play 3 Upgrader games",       "type": "play",   "game": "upgrader",  "target": 3,  "reward": 1_200_000},
+    {"id": "play_baccarat_3",  "desc": "Play 3 Baccarat games",       "type": "play",   "game": "baccarat",  "target": 3,  "reward": 1_000_000},
+    {"id": "play_horserace_2", "desc": "Play 2 Horse Race games",     "type": "play",   "game": "horserace", "target": 2,  "reward": 1_000_000},
+    {"id": "play_slots_5",     "desc": "Play 5 Slots games",          "type": "play",   "game": "slots",     "target": 5,  "reward": 1_200_000},
+    {"id": "play_towers_3",    "desc": "Play 3 Towers games",         "type": "play",   "game": "towers",    "target": 3,  "reward": 1_100_000},
+    {"id": "play_balloon_3",   "desc": "Play 3 Balloon games",        "type": "play",   "game": "balloon",   "target": 3,  "reward": 1_000_000},
     # ── wager quests ─────────────────────────────────────────────────────────
-    {"id": "wager_100k",       "desc": "Wager 100K gems total",        "type": "wager",  "game": "any",       "target": 100_000,   "reward": 300_000},
-    {"id": "wager_500k",       "desc": "Wager 500K gems total",        "type": "wager",  "game": "any",       "target": 500_000,   "reward": 750_000},
-    {"id": "wager_1m",         "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000, "reward": 1_200_000},
+    {"id": "wager_100k",       "desc": "Wager 100K gems total",        "type": "wager",  "game": "any",       "target": 100_000,   "reward": 1_000_000},
+    {"id": "wager_500k",       "desc": "Wager 500K gems total",        "type": "wager",  "game": "any",       "target": 500_000,   "reward": 1_500_000},
+    {"id": "wager_1m",         "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000, "reward": 2_000_000},
     {"id": "wager_5m",         "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000, "reward": 3_000_000},
     # ── win quests ────────────────────────────────────────────────────────────
-    {"id": "win_coinflip_2",   "desc": "Win 2 Coinflip games",        "type": "win",    "game": "coinflip",  "target": 2,  "reward": 400_000},
-    {"id": "win_any_3",        "desc": "Win 3 games (any)",           "type": "win",    "game": "any",       "target": 3,  "reward": 350_000},
-    {"id": "win_any_5",        "desc": "Win 5 games (any)",           "type": "win",    "game": "any",       "target": 5,  "reward": 600_000},
-    {"id": "win_any_10",       "desc": "Win 10 games (any)",          "type": "win",    "game": "any",       "target": 10, "reward": 1_200_000},
+    {"id": "win_coinflip_2",   "desc": "Win 2 Coinflip games",        "type": "win",    "game": "coinflip",  "target": 2,  "reward": 1_000_000},
+    {"id": "win_any_3",        "desc": "Win 3 games (any)",           "type": "win",    "game": "any",       "target": 3,  "reward": 1_000_000},
+    {"id": "win_any_5",        "desc": "Win 5 games (any)",           "type": "win",    "game": "any",       "target": 5,  "reward": 1_500_000},
+    {"id": "win_any_10",       "desc": "Win 10 games (any)",          "type": "win",    "game": "any",       "target": 10, "reward": 2_500_000},
     # ── streak quests ─────────────────────────────────────────────────────────
-    {"id": "win_streak_3",     "desc": "Win 3 games in a row",        "type": "streak", "game": "any",       "target": 3,  "reward": 800_000},
-    {"id": "win_streak_5",     "desc": "Win 5 games in a row",        "type": "streak", "game": "any",       "target": 5,  "reward": 2_000_000},
+    {"id": "win_streak_3",     "desc": "Win 3 games in a row",        "type": "streak", "game": "any",       "target": 3,  "reward": 1_500_000},
+    {"id": "win_streak_5",     "desc": "Win 5 games in a row",        "type": "streak", "game": "any",       "target": 5,  "reward": 3_000_000},
     # ── social quests ─────────────────────────────────────────────────────────
-    {"id": "tip_someone",      "desc": "Tip another user any amount", "type": "tip",    "game": "any",       "target": 1,  "reward": 250_000},
-    {"id": "daily_claim",      "desc": "Claim your /daily bonus",     "type": "daily",  "game": "any",       "target": 1,  "reward": 200_000},
+    {"id": "tip_someone",      "desc": "Tip another user any amount", "type": "tip",    "game": "any",       "target": 1,  "reward": 1_000_000},
+    {"id": "daily_claim",      "desc": "Claim your /daily bonus",     "type": "daily",  "game": "any",       "target": 1,  "reward": 1_000_000},
 ]
 
 QUEST_EMOJIS = {"play": "🎮", "wager": "💰", "win": "🏆", "streak": "🔥", "tip": "💸", "daily": "📅"}
@@ -14007,7 +14154,7 @@ async def pay_affiliate(conn, referral_id: int, bet: int):
 # Every 500 valid messages earns 25M gems 💎, claimed via /redeemmessagerewards
 # Anti-spam: 10s cooldown, no repeats, min 3 unique words, min 5 chars
 
-MESSAGE_REWARD_AMOUNT    = 2_500_000_000  # 25M gems (internal units) per 500 messages
+MESSAGE_REWARD_AMOUNT    = 25_000_000  # 25M gems per 500 messages
 MESSAGE_REWARD_EVERY     = 500
 MESSAGE_COOLDOWN_SECS    = 10
 MESSAGE_MIN_LENGTH       = 5
@@ -14286,7 +14433,7 @@ async def _ensure_member_snapshot_table(conn):
             send_hour   INT  DEFAULT 12,
             send_minute INT  DEFAULT 0,
             message     TEXT DEFAULT '',
-            title       TEXT DEFAULT 'Rbxflip Update',
+            title       TEXT DEFAULT 'bloxysab Update',
             color       TEXT DEFAULT 'gold',
             enabled     BOOL DEFAULT FALSE,
             last_sent   TEXT DEFAULT ''
@@ -14348,7 +14495,7 @@ async def _send_daily_dms(title: str, message: str, color_name: str):
                 description=f"{user.mention}\n\n{message}",
                 color=color
             )
-            embed.set_footer(text=f"Rbxflip  ·  {now_ts()}")
+            embed.set_footer(text=f"bloxysab  ·  {now_ts()}")
             await user.send(embed=embed)
             sent += 1
         except discord.Forbidden:
@@ -14607,7 +14754,7 @@ CB_BOT_LUCK    = 65   # bot pull luck
 # Costs: $5 / $2.50 / $1 / $0.50 / $0.20
 CASES = {
     # Named after all server ranks — highest to lowest cost
-    # Internal units = display value * 100 (e.g. 25M display = 2_500_000_000 internal)
+    # 1 internal unit = 1 gem displayed
     "champion":    {"name": "Champion Case",      "emoji": "👑", "cost": 75_000_000_000, "color": 0xFFD700},
     "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost": 55_000_000_000, "color": 0xB9F2FF},
     "legend":      {"name": "Legend Case",        "emoji": "🏆", "cost": 40_000_000_000, "color": 0xFFD700},
@@ -14624,7 +14771,7 @@ CASES = {
 # Prize tables: (weight, value, label)
 # Tiers: Common / Uncommon / Legendary / Mythical / OG
 # Weights 62/24/10/3/1 — Common=0.70x, Uncommon=0.85x, OG=5x case cost.
-# All values in internal units (display * 100)
+# All values in gems (1 unit = 1 gem)
 CASE_PRIZES = {
     "champion": [
         (62,     52,500,000,000, "Champion Crumbs"),  # Common     — 0.7x  (525.00M)
@@ -15309,7 +15456,7 @@ async def _run_cb(battle_id, message, case_key, num_cases,
     def _reel_line(val, tier, name=None, spinning=True):
         """Single item line — ▶ arrow highlights the landing slot."""
         arrow  = "▶" if not spinning else " "
-        label  = f"**{name or '???'}**  ·  {format_amount(val // 100)} 💎  *{PRIZE_TIER_LABELS[tier]}*"
+        label  = f"**{name or '???'}**  ·  {format_amount(val)} 💎  *{PRIZE_TIER_LABELS[tier]}*"
         return f"{arrow} {PRIZE_TIER_EMOJIS[tier]} {label}"
 
     def _player_field(pid, round_idx, reel_val=None, reel_tier=None, reel_name=None, spinning=True):
@@ -15318,14 +15465,14 @@ async def _run_cb(battle_id, message, case_key, num_cases,
         # Past rounds — compact single line to stay under 1024 char limit
         for i in range(round_idx):
             v, t, n = results[pid][i]
-            lines.append(f"{PRIZE_TIER_EMOJIS[t]} ~~{n}~~ `{format_amount(v // 100)}`")
+            lines.append(f"{PRIZE_TIER_EMOJIS[t]} ~~{n}~~ `{format_amount(v)}`")
         # Current round — either spinning or revealed
         if reel_val is not None:
             lines.append(_reel_line(reel_val, reel_tier, reel_name, spinning=spinning))
         # Subtotal of confirmed rounds
         done = sum(v for v, t, n in results[pid][:round_idx + (0 if spinning else 1)])
         if done:
-            lines.append(f"**Total: {format_amount(done // 100)}**")
+            lines.append(f"**Total: {format_amount(done)}**")
         return "\n".join(lines) if lines else "\u200b"
 
     for round_idx in range(num_cases):
@@ -15440,18 +15587,18 @@ async def _run_cb(battle_id, message, case_key, num_cases,
         # Show item summary — compact if many cases
         if num_cases <= 3:
             item_lines = [
-                f"{PRIZE_TIER_EMOJIS[t]} {n} `{format_amount(v // 100)}`"
+                f"{PRIZE_TIER_EMOJIS[t]} {n} `{format_amount(v)}`"
                 for v, t, n in results[p["id"]]
             ]
             items_str = "\n".join(item_lines)
         else:
             # Summarise: show best item + count
             best_v, best_t, best_n = max(results[p["id"]], key=lambda x: x[0])
-            items_str = f"{PRIZE_TIER_EMOJIS[best_t]} Best: **{best_n}** `{format_amount(best_v // 100)}`"
+            items_str = f"{PRIZE_TIER_EMOJIS[best_t]} Best: **{best_n}** `{format_amount(best_v)}`"
         board_lines.append(
             f"{pos_icons[min(i, 3)]} {p['mention']}{crown}\n"
             f"{items_str}\n"
-            f"┗ **{format_amount(totals[p['id']] // 100)}** total"
+            f"┗ **{format_amount(totals[p['id']])}** total"
         )
 
     mode_labels  = {"1v1": "⚔️ 1v1", "1v1v1": "🔱 1v1v1", "2v2": "🤝 2v2"}
@@ -15461,14 +15608,14 @@ async def _run_cb(battle_id, message, case_key, num_cases,
             f"## ⚔️  BATTLE OVER  ·  {mode_labels.get(mode, mode).upper()}\n"
             f"### 🏆  {w_label} wins!\n"
             f"```diff\n"
-            f"+ {format_amount(share // 100)} payout\n"
+            f"+ {format_amount(share)} payout\n"
             f"# {num_cases} case{'s' if num_cases > 1 else ''}  ·  {len(players)} players\n"
             f"```"
         )
     )
     result_embed.add_field(name="Scoreboard", value="\n\n".join(board_lines), inline=False)
-    result_embed.add_field(name="Payout",      value=f"`{format_amount(share // 100)} 💎`",            inline=True)
-    result_embed.add_field(name="Item Value",  value=f"`{format_amount(total_items_value // 100)} 💎`", inline=True)
+    result_embed.add_field(name="Payout",      value=f"`{format_amount(share)} 💎`",            inline=True)
+    result_embed.add_field(name="Item Value",  value=f"`{format_amount(total_items_value)} 💎`", inline=True)
     result_embed.add_field(name="Case",        value=f"{CASES[case_key]['emoji']} {CASES[case_key]['name']} ×{num_cases}", inline=True)
     result_embed.set_footer(text=f"Battle #{battle_id}  ·  {now_ts()}")
 
@@ -15490,9 +15637,9 @@ async def _run_cb(battle_id, message, case_key, num_cases,
     log_e = discord.Embed(title="⚔️ Case Battle Resolved", color=C_GOLD)
     log_e.add_field(name="Battle",  value=f"#{battle_id}  ·  {mode}",     inline=True)
     log_e.add_field(name="Case",    value=f"{case['name']}  ×{num_cases}", inline=True)
-    log_e.add_field(name="Items Total", value=format_amount(total_items_value // 100), inline=True)
+    log_e.add_field(name="Items Total", value=format_amount(total_items_value), inline=True)
     log_e.add_field(name="Winner",      value=w_label,                                 inline=True)
-    log_e.add_field(name="Payout",      value=format_amount(share // 100),             inline=True)
+    log_e.add_field(name="Payout",      value=format_amount(share),             inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
@@ -15676,38 +15823,38 @@ ACHIEVEMENTS = [
     {"id":"cdice_win_1",    "emoji":"🎨", "name":"Color Me Lucky",     "desc":"Win a color dice game",                      "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 1},
     {"id":"cdice_win_250",  "emoji":"🌈", "name":"Chromatic",          "desc":"Win 250 color dice games",                   "cat":"games",    "check": lambda r,x: x.get("cdice_wins",0) >= 250},
     # ══════════════════════════════════════════════════════
-    # ECONOMY — thresholds in internal units (100 = 1 gem)
+    # ECONOMY — thresholds in gems (1 unit = 1 gem)
     # ══════════════════════════════════════════════════════
-    {"id":"wager_10m",      "emoji":"💸", "name":"Getting Started",    "desc":"Wager 10M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_000_000_000},
-    {"id":"wager_50m",      "emoji":"💰", "name":"Warming Up",         "desc":"Wager 50M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 5_000_000_000},
-    {"id":"wager_200m",     "emoji":"🏦", "name":"High Roller",        "desc":"Wager 200M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 20_000_000_000},
-    {"id":"wager_600m",     "emoji":"🐋", "name":"Whale",              "desc":"Wager 600M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 60_000_000_000},
-    {"id":"wager_1b5",      "emoji":"🌊", "name":"Deep Water",         "desc":"Wager 1.5B gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 150_000_000_000},
-    {"id":"wager_3b",       "emoji":"💎", "name":"Emerald",            "desc":"Wager 3B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 300_000_000_000},
-    {"id":"wager_5b",       "emoji":"🎰", "name":"Degenerate",         "desc":"Wager 5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 500_000_000_000},
-    {"id":"wager_10b",      "emoji":"👑", "name":"Mega Whale",         "desc":"Wager 10B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_000_000_000_000},
-    {"id":"wager_15b",      "emoji":"🏴‍☠️","name":"Legend",             "desc":"Wager 15B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_500_000_000_000},
-    {"id":"balance_10m",    "emoji":"🔵", "name":"Stacking Up",        "desc":"Hold 10M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 1_000_000_000},
-    {"id":"balance_70m",    "emoji":"🟣", "name":"VIP Material",       "desc":"Hold 70M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 7_000_000_000},
-    {"id":"balance_500m",   "emoji":"💜", "name":"Rich",               "desc":"Hold 500M gems at once",                     "cat":"economy",  "check": lambda r,x: r["balance"] >= 50_000_000_000},
-    {"id":"balance_2b",     "emoji":"🌟", "name":"Filthy Rich",        "desc":"Hold 2B gems at once",                       "cat":"economy",  "check": lambda r,x: r["balance"] >= 200_000_000_000},
-    {"id":"balance_10b",    "emoji":"🏰", "name":"Empire",             "desc":"Hold 10B gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 1_000_000_000_000},
+    {"id":"wager_10m",      "emoji":"💸", "name":"Getting Started",    "desc":"Wager 10M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 10_000_000},
+    {"id":"wager_50m",      "emoji":"💰", "name":"Warming Up",         "desc":"Wager 50M gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 50_000_000},
+    {"id":"wager_200m",     "emoji":"🏦", "name":"High Roller",        "desc":"Wager 200M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 200_000_000},
+    {"id":"wager_600m",     "emoji":"🐋", "name":"Whale",              "desc":"Wager 600M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 600_000_000},
+    {"id":"wager_1b5",      "emoji":"🌊", "name":"Deep Water",         "desc":"Wager 1.5B gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_500_000_000},
+    {"id":"wager_3b",       "emoji":"💎", "name":"Emerald",            "desc":"Wager 3B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 3_000_000_000},
+    {"id":"wager_5b",       "emoji":"🎰", "name":"Degenerate",         "desc":"Wager 5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 5_000_000_000},
+    {"id":"wager_10b",      "emoji":"👑", "name":"Mega Whale",         "desc":"Wager 10B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 10_000_000_000},
+    {"id":"wager_15b",      "emoji":"🏴‍☠️","name":"Legend",             "desc":"Wager 15B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 15_000_000_000},
+    {"id":"balance_10m",    "emoji":"🔵", "name":"Stacking Up",        "desc":"Hold 10M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 10_000_000},
+    {"id":"balance_70m",    "emoji":"🟣", "name":"VIP Material",       "desc":"Hold 70M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 70_000_000},
+    {"id":"balance_500m",   "emoji":"💜", "name":"Rich",               "desc":"Hold 500M gems at once",                     "cat":"economy",  "check": lambda r,x: r["balance"] >= 500_000_000},
+    {"id":"balance_2b",     "emoji":"🌟", "name":"Filthy Rich",        "desc":"Hold 2B gems at once",                       "cat":"economy",  "check": lambda r,x: r["balance"] >= 2_000_000_000},
+    {"id":"balance_10b",    "emoji":"🏰", "name":"Empire",             "desc":"Hold 10B gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 10_000_000_000},
     {"id":"daily_7",        "emoji":"📅", "name":"Weekly",             "desc":"Claim daily 7 times",                        "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 7},
     {"id":"daily_30",       "emoji":"🗓️","name":"Monthly",             "desc":"Claim daily 30 times",                       "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 30},
     {"id":"daily_365",      "emoji":"🎂", "name":"Loyal",              "desc":"Claim daily 365 times",                      "cat":"economy",  "check": lambda r,x: x.get("daily_count",0) >= 365},
     {"id":"promo_redeem",   "emoji":"🎟️","name":"Code Breaker",        "desc":"Redeem a promo code",                        "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 1},
     {"id":"promo_10",       "emoji":"🗝️","name":"Hunter",              "desc":"Redeem 10 promo codes",                      "cat":"economy",  "check": lambda r,x: x.get("promo_count",0) >= 10},
-    {"id":"big_single_win", "emoji":"💣", "name":"One Shot",           "desc":"Win 100M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 10_000_000_000},
-    {"id":"godroll",        "emoji":"🌌", "name":"God Roll",           "desc":"Win 500M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 50_000_000_000},
-    {"id":"sickroll",       "emoji":"🔴", "name":"Sick Roll",          "desc":"Win 1B+ gems in a single game",              "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 100_000_000_000},
+    {"id":"big_single_win", "emoji":"💣", "name":"One Shot",           "desc":"Win 100M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 100_000_000},
+    {"id":"godroll",        "emoji":"🌌", "name":"God Roll",           "desc":"Win 500M+ gems in a single game",            "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 500_000_000},
+    {"id":"sickroll",       "emoji":"🔴", "name":"Sick Roll",          "desc":"Win 1B+ gems in a single game",              "cat":"economy",  "check": lambda r,x: x.get("biggest_win",0) >= 1_000_000_000},
     # ══════════════════════════════════════════════════════
     # SOCIAL
     # ══════════════════════════════════════════════════════
     {"id":"tip_once",       "emoji":"🤝", "name":"Generous",           "desc":"Send a tip to someone",                      "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 1},
-    {"id":"tip_50m",        "emoji":"💝", "name":"Philanthropist",     "desc":"Send 50M gems in tips total",                "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 5_000_000_000},
-    {"id":"tip_500m",       "emoji":"🫂", "name":"Big Spender",        "desc":"Send 500M gems in tips total",               "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 50_000_000_000},
+    {"id":"tip_50m",        "emoji":"💝", "name":"Philanthropist",     "desc":"Send 50M gems in tips total",                "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 50_000_000},
+    {"id":"tip_500m",       "emoji":"🫂", "name":"Big Spender",        "desc":"Send 500M gems in tips total",               "cat":"social",   "check": lambda r,x: r["tips_sent"] >= 500_000_000},
     {"id":"tip_recv_1",     "emoji":"🎁", "name":"Blessed",            "desc":"Receive a tip",                              "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 1},
-    {"id":"tip_recv_500m",  "emoji":"🤑", "name":"Popular",            "desc":"Receive 500M gems in tips total",            "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 50_000_000_000},
+    {"id":"tip_recv_500m",  "emoji":"🤑", "name":"Popular",            "desc":"Receive 500M gems in tips total",            "cat":"social",   "check": lambda r,x: r["tips_recv"] >= 500_000_000},
     {"id":"rain_catch",     "emoji":"🌧️","name":"Rain Dancer",         "desc":"Catch a rain drop",                          "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 1},
     {"id":"rain_catch_25",  "emoji":"⛈️","name":"Storm Chaser",        "desc":"Catch 25 rain drops",                        "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 25},
     {"id":"rain_catch_100", "emoji":"🌊", "name":"Flood Survivor",     "desc":"Catch 100 rain drops",                       "cat":"social",   "check": lambda r,x: x.get("rain_count",0) >= 100},
