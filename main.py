@@ -19,6 +19,12 @@ import hmac
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import io
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
 
 try:
     from dotenv import load_dotenv
@@ -104,7 +110,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.525
+BOT_HOUSE_WIN        = 0.51   # 51/49 edge across all games
 BJ_DEALER_STAND      = 17    # Dealer stands at this total (16=player friendly, 17=standard, 19=heavy edge)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -7018,6 +7024,112 @@ def render_tower(tower: list, current_row: int, revealed: dict) -> str:
     return "\
 ".join(lines)
 
+# ── Towers canvas renderer (Pillow) ───────────────────────────────────────────
+_TW_FONT_BOLD   = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_TW_FONT_REG    = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+_TW_BG          = (17,  18,  23)
+_TW_CARD_ACTIVE = (32,  38,  65)
+_TW_SAFE_BG     = (20,  45,  30)
+_TW_BOMB_BG     = (55,  15,  15)
+_TW_EMPTY_BG    = (22,  23,  32)
+_TW_MULT_BG     = (30,  35,  55)
+_TW_SAFE_C      = (34, 197,  94)
+_TW_BOMB_C      = (239, 68,  68)
+_TW_ACTIVE_C    = (99, 155, 255)
+_TW_EMPTY_C     = (45,  48,  72)
+_TW_WHITE       = (255,255, 255)
+_TW_MUTED       = (110,115, 150)
+_TW_GOLD        = (234,179,   8)
+
+_TW_CELL_W=72; _TW_CELL_H=44; _TW_CELL_R=10; _TW_GAP=8
+_TW_PAD_X=16;  _TW_PAD_Y=16;  _TW_MULT_W=68
+
+def _tw_rr(draw, xy, r, fill, outline, w=2):
+    draw.rounded_rectangle(xy, radius=r, fill=fill, outline=outline, width=w)
+
+def draw_towers_grid(tower: list, current_row: int, revealed: dict,
+                     rows: int = 10, cols: int = 3) -> bytes:
+    """Draw the towers grid as a PNG and return bytes."""
+    if not _PIL_AVAILABLE:
+        return b""
+    W = _TW_PAD_X*2 + _TW_MULT_W + _TW_GAP + cols*_TW_CELL_W + (cols-1)*_TW_GAP
+    H = _TW_PAD_Y*2 + rows*(_TW_CELL_H+_TW_GAP) - _TW_GAP
+
+    img  = Image.new("RGBA", (W, H), _TW_BG)
+    draw = ImageDraw.Draw(img)
+    try:
+        fb = ImageFont.truetype(_TW_FONT_BOLD, 13)
+        fr = ImageFont.truetype(_TW_FONT_REG,  11)
+        fs = ImageFont.truetype(_TW_FONT_BOLD, 18)
+    except Exception:
+        fb = fr = fs = ImageFont.load_default()
+
+    mults = TOWER_ROW_MULTS
+
+    for vis_row in range(rows):
+        r = (rows - 1) - vis_row
+        y = _TW_PAD_Y + vis_row * (_TW_CELL_H + _TW_GAP)
+
+        # Cumulative mult for this row
+        m = 1.0
+        for i in range(r + 1):
+            m *= mults[min(i, len(mults)-1)]
+        mult_str = f"{m:.2f}x"
+
+        mx0=_TW_PAD_X; mx1=_TW_PAD_X+_TW_MULT_W
+        my0=y;          my1=y+_TW_CELL_H
+        if r == current_row:
+            mc = _TW_ACTIVE_C
+        elif r < current_row:
+            mc = _TW_SAFE_C
+        else:
+            mc = _TW_MUTED
+        _tw_rr(draw, [mx0,my0,mx1,my1], 8, _TW_MULT_BG, mc, 2)
+        draw.text(((mx0+mx1)//2,(my0+my1)//2), mult_str, font=fb, fill=mc, anchor="mm")
+
+        for c in range(cols):
+            cx0 = _TW_PAD_X + _TW_MULT_W + _TW_GAP + c*(_TW_CELL_W+_TW_GAP)
+            cx1 = cx0 + _TW_CELL_W
+            cy0 = y; cy1 = y + _TW_CELL_H
+            cx  = (cx0+cx1)//2; cy=(cy0+cy1)//2
+
+            if r in revealed:
+                picked = revealed[r]
+                if c == picked:
+                    tile   = tower[r][c]
+                    is_safe = tile == "✅"
+                    bg     = _TW_SAFE_BG  if is_safe else _TW_BOMB_BG
+                    brd    = _TW_SAFE_C   if is_safe else _TW_BOMB_C
+                    sym    = "✓"          if is_safe else "✕"
+                    sc     = _TW_SAFE_C   if is_safe else _TW_BOMB_C
+                    _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, bg, brd, 3)
+                    draw.text((cx,cy), sym, font=fs, fill=sc, anchor="mm")
+                else:
+                    _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_EMPTY_BG, _TW_EMPTY_C, 1)
+                    draw.text((cx,cy), "·", font=fs, fill=_TW_MUTED, anchor="mm")
+            elif r == current_row:
+                _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_CARD_ACTIVE, _TW_ACTIVE_C, 2)
+                draw.text((cx,cy), "?", font=fb, fill=_TW_WHITE, anchor="mm")
+            else:
+                _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_EMPTY_BG, _TW_EMPTY_C, 1)
+                draw.text((cx,cy), "·", font=fr, fill=_TW_EMPTY_C, anchor="mm")
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf.read()
+
+
+async def _tw_edit(interaction: discord.Interaction, embed: discord.Embed, view=None):
+    """Edit the Towers message, attaching the grid PNG if available."""
+    img = getattr(embed, "_tw_img", None)
+    if img:
+        f = discord.File(io.BytesIO(img), filename="towers_grid.png")
+        await interaction.edit_original_response(embed=embed, view=view, attachments=[f])
+    else:
+        await interaction.edit_original_response(embed=embed, view=view)
+
 class TowersView(BaseGameView):
     def __init__(self, creator: discord.User, bet: int, tower: list):
         super().__init__(timeout=180)
@@ -7059,28 +7171,64 @@ class TowersView(BaseGameView):
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
         if outcome == "playing":
             color = C_BLUE
-            title = "🗼  Towers - Easy"
+            title = "🗼  TOWERS"
+            status = f"📍 Row {self.current_row + 1} — Pick a tile"
         elif outcome == "win":
             color = C_WIN
-            title = "🗼  Towers - Cashed Out"
+            title = "🗼  TOWERS — CASHED OUT 💰"
+            status = f"✅ Cashed out at row {self.rows_cleared}"
         elif outcome == "bomb":
             color = C_LOSS
-            title = "🗼  Towers - 💥 Boom"
+            title = "🗼  TOWERS — 💥 BOOM"
+            status = f"💣 Hit a bomb on row {self.current_row + 1}"
         else:
             color = C_VIP
-            title = "🗼  Towers - Cleared!"
+            title = "🗼  TOWERS — CLEARED! 🏆"
+            status = "🏆 All 10 rows cleared!"
 
-        grid = render_tower(self.tower, self.current_row, self.revealed)
+        payout = min(self.current_winnings, MAX_PAYOUT)
+        profit = payout - self.bet
+        profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
 
-        description = (
-            f"{grid}\n"
-            f"\n"
-            f"Bet: **{format_amount(self.bet)}** 💎\n"
-            f"Multiplier: **{self.current_mult:.2f}x**\n"
-            f"Potential Winnings: **{format_amount(self.current_winnings)}** 💎\n"
-        )
-        embed = discord.Embed(color=color, title=title, description=description)
-        embed.set_footer(text=f"Row {self.current_row + 1} • Easy Mode")
+        if outcome in ("win", "cleared"):
+            desc = (
+                f"```\n"
+                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
+                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
+                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
+                f"{'Payout:':<18} {format_amount(payout)} 💎\n"
+                f"{'Profit:':<18} {profit_str} 💎\n"
+                f"```"
+            )
+        elif outcome == "bomb":
+            desc = (
+                f"```\n"
+                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
+                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
+                f"{'Lost:':<18} {format_amount(self.bet)} 💎\n"
+                f"```"
+            )
+        else:
+            desc = (
+                f"```\n"
+                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
+                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
+                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
+                f"{'Cash Out Now:':<18} {format_amount(payout)} 💎\n"
+                f"{'Next Row:':<18} {self.next_mult:.2f}×\n"
+                f"```"
+            )
+
+        embed = discord.Embed(color=color, title=title, description=f"{status}\n{desc}")
+        embed.set_author(name=f"{self.creator.display_name}  ·  Towers", icon_url=self.creator.display_avatar.url)
+        embed.set_footer(text=f"Easy Mode  ·  1 bomb per row")
+
+        # Attach Pillow canvas
+        if _PIL_AVAILABLE:
+            img_bytes = draw_towers_grid(self.tower, self.current_row, self.revealed)
+            if img_bytes:
+                embed.set_image(url="attachment://towers_grid.png")
+                embed._tw_img = img_bytes
         return embed
 
     # ── Bet deduction ─────────────────────────────────────────
@@ -7141,8 +7289,7 @@ class TowersView(BaseGameView):
                     await release_conn(conn)
 
                 try:
-                    await interaction.edit_original_response(
-                        embed=self.game_embed("bomb"), view=None)
+                    await _tw_edit(interaction, self.game_embed("bomb"), view=None)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7191,8 +7338,7 @@ class TowersView(BaseGameView):
                         await release_conn(conn)
 
                     try:
-                        await interaction.edit_original_response(
-                            embed=self.game_embed("cleared"), view=None)
+                        await _tw_edit(interaction, self.game_embed("cleared"), view=None)
                     except Exception as _result_err:
                         print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7205,8 +7351,7 @@ class TowersView(BaseGameView):
                     await send_log(log_e)
                 else:
                     self._update_buttons()
-                    await interaction.edit_original_response(
-                        embed=self.game_embed("playing"), view=self)
+                    await _tw_edit(interaction, self.game_embed("playing"), view=self)
 
     # ── Cash out ──────────────────────────────────────────────
     async def _cashout(self, interaction: discord.Interaction):
@@ -7253,8 +7398,7 @@ class TowersView(BaseGameView):
                 await release_conn(conn)
 
             try:
-                await interaction.edit_original_response(
-                    embed=self.game_embed("win"), view=None)
+                await _tw_edit(interaction, self.game_embed("win"), view=None)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7374,9 +7518,14 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
         return
     view  = TowersView(interaction.user, amt, tower)
     view.bet_deducted = True
-    lobby = view.game_embed()
-    lobby.description = f"## 🗼  TOWERS\nWager: **{format_amount(amt)} 💎**  ·  Climb 10 rows\n─────────────────────────────\n" + (lobby.description or "")
-    await interaction.response.send_message(embed=lobby, view=view)
+    _init_embed = view.game_embed()
+    _init_img   = getattr(_init_embed, "_tw_img", None)
+    if _init_img:
+        await interaction.response.send_message(
+            embed=_init_embed, view=view,
+            files=[discord.File(io.BytesIO(_init_img), filename="towers_grid.png")])
+    else:
+        await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
 
 
@@ -7409,55 +7558,119 @@ def rps_outcome(player: str, bot_pick: str) -> str:
 def rps_cumulative_mult(wins: int) -> float:
     return round(min(RPS_WIN_MULT ** wins, RPS_MAX_MULT), 4)
 
+# ── RPS card-grid image renderer (Pillow) ─────────────────────────────────────
+_RPS_FONT_BOLD  = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_RPS_FONT_HAND  = "/usr/share/fonts/opentype/unifont/unifont.otf"
+_RPS_HAND_SYM   = {"rock": "\u270a", "paper": "\u270b", "scissors": "\u270c"}
+
+_RPS_BG          = (17,  18,  23)
+_RPS_CARD_BG     = (30,  31,  40)
+_RPS_CARD_EMPTY  = (22,  23,  30)
+_RPS_WIN_C       = (34, 197,  94)
+_RPS_LOSS_C      = (239, 68,  68)
+_RPS_TIE_C       = (234,179,   8)
+_RPS_EMPTY_C     = (55,  58,  80)
+_RPS_WHITE       = (255,255, 255)
+_RPS_DARK        = (10,  10,  10)
+_RPS_MUTED       = (120,120, 150)
+
+_CARD_W = 90; _CARD_H = 100; _CARD_R = 12; _BADGE_H = 22
+_GAP    = 10; _PAD_X  = 18;  _PAD_Y  = 18
+_ROW_GAP= 14; _LABEL_H= 26;  _MAX_COLS = 6
+
+def _rr(draw, xy, r, fill, outline, w=3):
+    draw.rounded_rectangle(xy, radius=r, fill=fill, outline=outline, width=w)
+
+def draw_rps_grid(history: list, max_rounds: int = 6) -> bytes:
+    """Draw the RPS card grid and return PNG bytes."""
+    if not _PIL_AVAILABLE:
+        return b""
+    cols = min(max(len(history), max_rounds), _MAX_COLS)
+    W = _PAD_X*2 + cols*_CARD_W + (cols-1)*_GAP
+    H = _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + _LABEL_H + _CARD_H + _PAD_Y
+
+    img  = Image.new("RGBA", (W, H), _RPS_BG)
+    draw = ImageDraw.Draw(img)
+    try:
+        fl = ImageFont.truetype(_RPS_FONT_BOLD, 13)
+        fb = ImageFont.truetype(_RPS_FONT_BOLD, 14)
+        fh = ImageFont.truetype(_RPS_FONT_HAND, 42)
+        fe = ImageFont.truetype(_RPS_FONT_BOLD, 11)
+    except Exception:
+        fl = fb = fh = fe = ImageFont.load_default()
+
+    # Row labels
+    draw.text((_PAD_X, _PAD_Y + 4), "👤  YOU", font=fl, fill=_RPS_MUTED)
+    draw.text((_PAD_X, _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + 4), "🤖  BOT", font=fl, fill=_RPS_MUTED)
+
+    for col in range(cols):
+        played = col < len(history)
+        h      = history[col] if played else {}
+        res    = h.get("result", "")
+        pm     = h.get("player", "")
+        bm     = h.get("bot", "")
+        mult   = h.get("mult", 1.0)
+        x      = _PAD_X + col * (_CARD_W + _GAP)
+
+        for is_p in [True, False]:
+            y    = _PAD_Y + _LABEL_H if is_p else _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + _LABEL_H
+            move = pm if is_p else bm
+            if not played:
+                border, fill = _RPS_EMPTY_C, _RPS_CARD_EMPTY
+            elif res == "win":
+                border, fill = (_RPS_WIN_C if is_p else _RPS_LOSS_C), _RPS_CARD_BG
+            elif res == "loss":
+                border, fill = (_RPS_LOSS_C if is_p else _RPS_WIN_C), _RPS_CARD_BG
+            else:
+                border, fill = _RPS_TIE_C, _RPS_CARD_BG
+
+            _rr(draw, [x, y, x+_CARD_W, y+_CARD_H], _CARD_R, fill, border, 3)
+
+            if played and move:
+                sym = _RPS_HAND_SYM.get(move, "?")
+                try:
+                    bb = draw.textbbox((0,0), sym, font=fh)
+                    tw, th = bb[2]-bb[0], bb[3]-bb[1]
+                    draw.text((x+(_CARD_W-tw)//2-bb[0], y+(_CARD_H-th)//2-bb[1]), sym, font=fh, fill=_RPS_WHITE)
+                except Exception:
+                    draw.text((x+_CARD_W//2, y+_CARD_H//2), move[:1].upper(), font=fl, fill=_RPS_WHITE, anchor="mm")
+            elif not played:
+                draw.text((x+_CARD_W//2, y+_CARD_H//2), "SAB", font=fe, fill=_RPS_MUTED, anchor="mm")
+
+        # Multiplier badge (between the two rows)
+        bx0 = x+8; bx1 = x+_CARD_W-8
+        by0 = _PAD_Y+_LABEL_H+_CARD_H+3; by1 = by0+_BADGE_H-2
+        cx  = (bx0+bx1)//2; cy = (by0+by1)//2
+        bc  = (_RPS_WIN_C if res=="win" else _RPS_LOSS_C if res=="loss" else _RPS_TIE_C) if played else _RPS_EMPTY_C
+        _rr(draw, [bx0, by0, bx1, by1], 7, bc, bc, 0)
+        txt = f"{mult:.2f}x" if played else "—"
+        draw.text((cx, cy), txt, font=fb, fill=_RPS_DARK if played else _RPS_MUTED, anchor="mm")
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf.read()
+
 def rps_card_grid(history: list) -> str:
-    """
-    Render card-style grid matching bloxysab UI.
-    Top row = player moves, bottom row = bot moves.
-    Each cell is a framed card with move label and multiplier badge below.
-    """
+    """Fallback text grid used only if Pillow is unavailable."""
     if not history:
         return ""
+    lines = []
+    for i, h in enumerate(history, 1):
+        p, b, res, mult = h["player"], h["bot"], h["result"], h["mult"]
+        badge = "✅ **WIN**" if res=="win" else "❌ **LOSE**" if res=="loss" else "🤝 **TIE**"
+        lines.append(f"`R{i:02}` {RPS_EMOJI[p]} **vs** {RPS_EMOJI[b]}  \u00b7  {badge}  \u00b7  `{mult:.2f}x`")
+    return "\n".join(lines)
 
-    top_cells  = []  # player
-    bot_cells  = []  # bot
-    mult_cells = []
 
-    for h in history:
-        p = h["player"]
-        b = h["bot"]
-        result = h["result"]
-        mult = h["mult"]
-
-        p_icon = RPS_EMOJI[p]
-        b_icon = RPS_EMOJI[b]
-
-        if result == "win":
-            p_frame = f"🟩{p_icon}🟩"
-            b_frame = f"🟥{b_icon}🟥"
-        elif result == "loss":
-            p_frame = f"🟥{p_icon}🟥"
-            b_frame = f"🟩{b_icon}🟩"
-        else:
-            p_frame = f"🟨{p_icon}🟨"
-            b_frame = f"🟨{b_icon}🟨"
-
-        top_cells.append(p_frame)
-        bot_cells.append(b_frame)
-        mult_cells.append(f"`{mult:.2f}x`")
-
-    top_row  = " ".join(top_cells)
-    bot_row  = " ".join(bot_cells)
-    mult_row = " ".join(mult_cells)
-
-    return (
-        f"👤 {top_row}\
-"
-        f"🤖 {bot_row}\
-"
-        f"━━━━━━━━━━━━━━━━━━━━━━━\
-"
-        f"   {mult_row}"
-    )
+async def _rps_edit(interaction: discord.Interaction, embed: discord.Embed, view=None):
+    """Edit the RPS message, attaching the card-grid PNG if available."""
+    img = getattr(embed, "_rps_img", None)
+    if img:
+        f = discord.File(io.BytesIO(img), filename="rps_grid.png")
+        await interaction.edit_original_response(embed=embed, view=view, attachments=[f])
+    else:
+        await interaction.edit_original_response(embed=embed, view=view)
 
 class RPSView(BaseGameView):
     def __init__(self, creator: discord.User, bet: int):
@@ -7488,64 +7701,87 @@ class RPSView(BaseGameView):
         self.cashout_btn.disabled  = self.done or self.wins == 0
 
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
+        payout  = min(self.current_winnings, MAX_PAYOUT)
+        profit  = payout - self.bet
+        profit_str = (f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}")
+
+        # ── Colour + title per state ──────────────────────────────────────────
         if outcome == "playing":
             color = C_BLUE
-            title = "✊  ROCK · PAPER · SCISSORS"
+            header = "✊  ROCK · PAPER · SCISSORS"
+            status_icon = "🎮"
         elif outcome == "win":
             color = C_WIN
-            title = "🏆 VICTORY!"
+            header = "🏆  CASHED OUT"
+            status_icon = "💰"
         elif outcome == "loss":
             color = C_LOSS
-            title = "💀 DEFEATED!"
-        else:
-            color = C_GOLD
-            title = "🤝 TIE — Keep Going!"
+            header = "💥  WIPED OUT"
+            status_icon = "❌"
+        else:  # tie
+            color = C_PUSH
+            header = "🤝  TIE — FREE ROUND"
+            status_icon = "↩️"
 
-        payout = min(self.current_winnings, MAX_PAYOUT)
-        profit = payout - self.bet
-        profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
+        # ── Last round snapshot ───────────────────────────────────────────────
+        last_round = ""
+        if self.history:
+            h = self.history[-1]
+            p_e = RPS_EMOJI[h["player"]]
+            b_e = RPS_EMOJI[h["bot"]]
+            last_round = (
+                f"\n"
+                f"**Last Round**\n"
+                f"┌──────────────────────┐\n"
+                f"│  👤 You:  {p_e} {RPS_LABEL[h['player']]:<10}  │\n"
+                f"│  🤖 Bot:  {b_e} {RPS_LABEL[h['bot']]:<10}  │\n"
+                f"└──────────────────────┘"
+            )
+
+        # ── Stats block ───────────────────────────────────────────────────────
+        streak_bar = ("🟩" * min(self.wins, 8)) + ("⬛" * max(0, 8 - self.wins))
+        next_mult  = rps_cumulative_mult(self.wins + 1)
 
         if outcome in ("win", "loss"):
             stats = (
-                f"**🏅 Game Results**\n"
+                f"**{status_icon} Result**\n"
                 f"```\n"
-                f"{'Consecutive Wins:':<22} {self.wins}\n"
-                f"{'Total Rounds:':<22} {self.total_rounds}\n"
-                f"{'Bet Amount:':<22} {format_amount(self.bet)}\n"
-                f"{'Multiplier:':<22} {self.current_mult:.2f}x\n"
-                f"{'Payout:':<22} {format_amount(payout)}\n"
-                f"{'Profit:':<22} {profit_str}\n"
+                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
+                f"{'Streak:':<18} {self.wins} win{'s' if self.wins != 1 else ''}\n"
+                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
+                f"{'Payout:':<18} {format_amount(payout)} 💎\n"
+                f"{'Profit:':<18} {profit_str} 💎\n"
                 f"```"
             )
         else:
             stats = (
-                f"**🏅 Game Results**\n"
+                f"**{status_icon} Live Game**\n"
                 f"```\n"
-                f"{'Consecutive Wins:':<22} {self.wins}\n"
-                f"{'Total Rounds:':<22} {self.total_rounds}\n"
-                f"{'Bet Amount:':<22} {format_amount(self.bet)}\n"
-                f"{'Multiplier:':<22} {self.current_mult:.2f}x\n"
-                f"{'Cashout:':<22} {format_amount(payout)}\n"
+                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
+                f"{'Streak:':<18} {self.wins} win{'s' if self.wins != 1 else ''}\n"
+                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
+                f"{'Cash Out Now:':<18} {format_amount(payout)} 💎\n"
+                f"{'Next Win:':<18} {next_mult:.2f}×\n"
                 f"```"
             )
 
-        grid = rps_card_grid(self.history)
+        # ── Win streak bar ─────────────────────────────────────────────────────
+        streak_display = f"**Win Streak** `{self.wins}`\n{streak_bar}\n"
 
-        if outcome == "win":
-            result_line = "\n🎉 **Successfully cashed out!**\n"
-        elif outcome == "loss":
-            result_line = "\n💥 **You lost!**\n"
-        elif outcome == "tie":
-            result_line = "\n🤝 **Tie! Play again.**\n"
-        else:
-            result_line = "\n"
+        description = stats + last_round + "\n\n" + streak_display
 
-        description = stats + result_line + (f"\n{grid}" if grid else "")
+        seed  = f"{self.creator.id}-{len(self.history)}-{time.time_ns()}"
+        hsh   = hashlib.sha256(seed.encode()).hexdigest()
+        embed = discord.Embed(title=header, description=description, color=color)
+        embed.set_author(name=f"{self.creator.display_name}  ·  RPS", icon_url=self.creator.display_avatar.url)
+        embed.set_footer(text=f"🔒 {hsh[:24]}...  ·  Round {self.total_rounds}")
 
-        seed = f"{self.creator.id}-{len(self.history)}-{time.time_ns()}"
-        h = hashlib.sha256(seed.encode()).hexdigest()
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_footer(text=f"🔒 Hash: {h[:20]}... | Streak: {self.wins}")
+        # Attach card-grid image inline (Pillow renders it, set_image shows it in embed)
+        if _PIL_AVAILABLE and self.history:
+            img_bytes = draw_rps_grid(self.history, max_rounds=6)
+            if img_bytes:
+                embed.set_image(url="attachment://rps_grid.png")
+                embed._rps_img = img_bytes  # stash so send/edit can attach it
         return embed
 
 
@@ -7579,7 +7815,7 @@ class RPSView(BaseGameView):
                 self.stop()
                 return
 
-            # House edge: 10% tie chance, else 51.5% bot wins
+            # House edge: 10% tie chance, else 51% bot wins (51/49)
             # Check for /test force override first
             _rps_forced = _force_result.pop(self.creator.id, None)
             if _rps_forced == "win":
@@ -7613,13 +7849,13 @@ class RPSView(BaseGameView):
                 self.history.append({"player": player_move, "bot": bot_move,
                                      "result": "win", "mult": self.current_mult})
                 self._update_buttons()
-                await interaction.edit_original_response(embed=self.game_embed("playing"), view=self)
+                await _rps_edit(interaction, self.game_embed("playing"), view=self)
 
             elif result == "tie":
                 self.history.append({"player": player_move, "bot": bot_move,
                                      "result": "tie", "mult": self.current_mult})
                 self._update_buttons()
-                await interaction.edit_original_response(embed=self.game_embed("tie"), view=self)
+                await _rps_edit(interaction, self.game_embed("tie"), view=self)
 
             else:
                 self.history.append({"player": player_move, "bot": bot_move,
@@ -7642,7 +7878,7 @@ class RPSView(BaseGameView):
                     await release_conn(conn)
 
                 try:
-                    await interaction.edit_original_response(embed=self.game_embed("loss"), view=None)
+                    await _rps_edit(interaction, self.game_embed("loss"), view=None)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7693,7 +7929,7 @@ class RPSView(BaseGameView):
             await release_conn(conn)
 
         try:
-            await interaction.edit_original_response(embed=self.game_embed("win"), view=None)
+            await _rps_edit(interaction, self.game_embed("win"), view=None)
         except Exception as _result_err:
             print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7707,8 +7943,7 @@ class RPSView(BaseGameView):
         log_e.set_footer(text=now_ts())
         await send_log(log_e)
 
-    async def on_timeout(self):
-        for item in self.children:
+    async def on_timeout(self):        for item in self.children:
             item.disabled = True
         if not self.done:
             conn = await get_conn()
@@ -7733,28 +7968,28 @@ class RPSView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
 
-    @discord.ui.button(label="Rock", style=discord.ButtonStyle.secondary, emoji="✊")
+    @discord.ui.button(label="Rock", style=discord.ButtonStyle.blurple, emoji="✊", row=0)
     async def rock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
             return
         await self._play(interaction, "rock")
 
-    @discord.ui.button(label="Paper", style=discord.ButtonStyle.secondary, emoji="✋")
+    @discord.ui.button(label="Paper", style=discord.ButtonStyle.blurple, emoji="✋", row=0)
     async def paper_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
             return
         await self._play(interaction, "paper")
 
-    @discord.ui.button(label="Scissors", style=discord.ButtonStyle.secondary, emoji="✌️", row=1)
+    @discord.ui.button(label="Scissors", style=discord.ButtonStyle.blurple, emoji="✌️", row=0)
     async def scissors_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
             return
         await self._play(interaction, "scissors")
 
-    @discord.ui.button(label="Cashout", style=discord.ButtonStyle.green, emoji="💰", row=1)
+    @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.green, emoji="💸", row=1)
     async def cashout_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -7810,7 +8045,14 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
         return
     view = RPSView(interaction.user, amt)
     view.bet_deducted = True
-    await interaction.response.send_message(embed=view.game_embed(), view=view)
+    _init_embed = view.game_embed()
+    _init_img   = getattr(_init_embed, "_rps_img", None)
+    if _init_img:
+        await interaction.response.send_message(
+            embed=_init_embed, view=view,
+            files=[discord.File(io.BytesIO(_init_img), filename="rps_grid.png")])
+    else:
+        await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
 
 # ═══════════════════════════════════════════════════════════
@@ -7854,16 +8096,62 @@ def mines_calc_mult(mines: int, gems_found: int) -> float:
         mult *= (1.0 / prob) * factor
     return round(min(mult, MINES_MAX_MULT), 2)
 
+# ── Mines rigged board weights ────────────────────────────────────────────────
+# For each tile index, precomputed "danger weights" that concentrate bombs
+# near center and common click patterns. Used to rig the board after each
+# safe click so bombs drift toward likely next clicks.
+_MINES_DANGER_WEIGHTS = [
+    1,2,3,2,1,
+    2,4,6,4,2,
+    3,6,9,6,3,
+    2,4,6,4,2,
+    1,2,3,2,1,
+]  # center-heavy: index 12 (center) = weight 9
+
 def mines_generate_grid(mines: int, force_win: bool = False) -> list:
+    """Generate initial grid. Rigging happens per-click in MinesView._pick."""
     grid = ["gem"] * MINES_GRID_SIZE
     if force_win:
-        # Force win: put all bombs in the last N positions so first clicks are always gems
         bomb_positions = list(range(MINES_GRID_SIZE - mines, MINES_GRID_SIZE))
     else:
         bomb_positions = random.sample(range(MINES_GRID_SIZE), mines)
     for i in bomb_positions:
         grid[i] = "bomb"
     return grid
+
+def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
+    """
+    Fully rig the board after each safe click.
+    Bombs are redistributed with HIGH weight toward:
+      1. Tiles adjacent (distance 1) to last_clicked  — weight 12
+      2. Tiles 2 steps away                           — weight 6
+      3. Center region                                — +3 bonus
+      4. Already-revealed tiles                       — weight 0 (excluded)
+    This makes the next click extremely dangerous without touching multipliers.
+    """
+    unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
+    if len(unrevealed) <= mines:
+        return grid  # can't rig — too few unrevealed tiles
+
+    r_c, c_c = divmod(last_clicked, 5)
+
+    def weight(idx):
+        r, c = divmod(idx, 5)
+        dist = abs(r - r_c) + abs(c - c_c)
+        base = _MINES_DANGER_WEIGHTS[idx]
+        if dist == 0:   return 0   # the tile just clicked (already revealed)
+        if dist == 1:   return base + 12
+        if dist == 2:   return base + 6
+        return max(base - 2, 1)
+
+    weights = [weight(i) for i in unrevealed]
+    new_bombs = random.choices(unrevealed, weights=weights, k=mines)
+    new_grid = ["gem"] * MINES_GRID_SIZE
+    for b in new_bombs:
+        new_grid[b] = "bomb"
+    for r in revealed:
+        new_grid[r] = "gem"
+    return new_grid
 
 def mines_render_grid(grid: list, revealed: set, game_over: bool = False) -> str:
     rows = []
@@ -7943,7 +8231,8 @@ class MinesView(BaseGameView):
         if outcome == "loss":
             stats = (
                 f"## 💥  MINES — BOOM!\n"
-                f"┌─────────────────────────┐\n"                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
+                f"┌─────────────────────────┐\n"
+                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
                 f"💣 **Mines** — {self.mines}\n"
                 f"💎 **Found** — {self.gems_found}/{gems_total}\n"
                 f"❌ **Lost** — {format_amount(self.bet)} 💎"
@@ -8023,7 +8312,7 @@ class MinesView(BaseGameView):
                 finally:
                     await release_conn(conn)
                 try:
-                    await interaction.edit_original_response(embed=self.game_embed("loss"), view=None)
+                    await _rps_edit(interaction, self.game_embed("loss"), view=None)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
                 log_e = discord.Embed(title="💣 Mines Result", color=C_LOSS)
@@ -8039,28 +8328,12 @@ class MinesView(BaseGameView):
                 self.revealed.add(index)
                 self.gems_found += 1
 
-                # ── Hidden house edge: re-bias bomb positions after each safe click ──
-                # Bombs drift toward unrevealed tiles that are statistically likely
-                # to be clicked next (adjacent/center), raising actual hit rate above
-                # what the displayed multiplier implies.
-                unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in self.revealed]
-                if len(unrevealed) >= self.mines and not self.done:
-                    # Weight tiles toward center (index 12) and away from corners
-                    def _tile_weight(idx):
-                        row, col = divmod(idx, 5)
-                        dist = abs(row - 2) + abs(col - 2)  # Manhattan from center
-                        return max(1, 5 - dist)  # center = weight 5, corners = weight 1
-                    weights = [_tile_weight(i) for i in unrevealed]
-                    new_bombs = random.choices(unrevealed, weights=weights, k=self.mines)
-                    # Rebuild grid: gems everywhere, then place biased bombs
-                    new_grid = ["gem"] * MINES_GRID_SIZE
-                    for b in new_bombs:
-                        new_grid[b] = "bomb"
-                    # Keep already-revealed tiles as gems (they were already safe)
-                    for r in self.revealed:
-                        new_grid[r] = "gem"
-                    self.grid = new_grid
-                # ── End hidden edge ──
+                # ── Fully rigged board: re-rig on every safe click ───────────────
+                # mines_rig_board clusters bombs toward adjacent tiles every time,
+                # giving a strong house edge without touching multiplier math.
+                if not self.done:
+                    self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
+                # ── End rigged board ──
 
                 gems_total = MINES_GRID_SIZE - self.mines
 
@@ -8103,7 +8376,7 @@ class MinesView(BaseGameView):
                     await send_log(log_e)
                 else:
                     self._build_buttons()
-                    await interaction.edit_original_response(embed=self.game_embed("playing"), view=self)
+                    await _rps_edit(interaction, self.game_embed("playing"), view=self)
 
     async def _cashout(self, interaction: discord.Interaction):
         async with self._lock:
@@ -8142,7 +8415,7 @@ class MinesView(BaseGameView):
             finally:
                 await release_conn(conn)
             try:
-                await interaction.edit_original_response(embed=self.game_embed("win"), view=None)
+                await _rps_edit(interaction, self.game_embed("win"), view=None)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
             log_e = discord.Embed(title="💣 Mines Result", color=C_WIN)
@@ -10980,25 +11253,24 @@ async def cmd_withdraw(interaction: discord.Interaction):
             finally:
                 await release_conn(conn2)
 
-            # Build the ticket embed matching the exact screenshot format
-            ticket_e = discord.Embed(
-                color=0x2b2d31,
-                description=(
-                    f"🚨 **Withdrawal Request**\n\n"
-                    f"**Requester**\n{interaction.user.mention}\n\n"
-                    f"**Requested Items**\n"
-                    f"- {item} x{quantity} - {format_amount(total_cost)} 💎\n\n"
-                    f"**Total Value**\n"
-                    f"{format_amount(total_cost)} 💎\n\n"
-                    f"⚠️ **Important Information**\n"
-                    f"• Do not spam ping staff members\n"
-                    f"• Staff will process your withdrawal as soon as possible\n"
-                    f"• This ticket will be handled by an administrator\n"
-                    f"• Make sure to provide any additional details if needed\n\n"
-                    f"User ID: {interaction.user.id} • Ticket ID: {ticket_id}"
-                )
+            # Build the ticket embed matching the screenshot UI
+            ticket_e = discord.Embed(color=0x2b2d31)
+            ticket_e.description = (
+                f"🚀 **Withdrawal Request**\n\n"
+                f"**Requester**\n"
+                f"{interaction.user.mention}\n\n"
+                f"**Requested Items**\n"
+                f"- {item} x{quantity} - {format_amount(total_cost)} 💎\n\n"
+                f"**Total Value**\n"
+                f"{format_amount(total_cost)} 💎\n\n"
+                f"⚠️ **Important Information**\n"
+                f"• Do not spam ping staff members\n"
+                f"• Staff will process your withdrawal as soon as possible\n"
+                f"• This ticket will be handled by an administrator\n"
+                f"• Make sure to provide any additional details if needed\n\n"
+                f"User ID: {interaction.user.id} • Ticket ID: {ticket_id}"
             )
-            _brand_embed(ticket_e)
+            # No brand footer on ticket — keep it clean like the screenshot
 
             view = WithdrawTicketView(ticket_id=ticket_id, user_id=interaction.user.id)
             # Ping staff + user when ticket opens
@@ -14765,17 +15037,17 @@ CB_BOT_LUCK    = 65   # bot pull luck
 CASES = {
     # Named after all server ranks — highest to lowest cost
     # 1 internal unit = 1 gem displayed
-    "champion":    {"name": "Champion Case",      "emoji": "👑", "cost": 75_000_000_000, "color": 0xFFD700},
-    "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost": 55_000_000_000, "color": 0xB9F2FF},
-    "legend":      {"name": "Legend Case",        "emoji": "🏆", "cost": 40_000_000_000, "color": 0xFFD700},
-    "whale":       {"name": "Whale Case",         "emoji": "🐋", "cost": 30_000_000_000, "color": 0x1E90FF},
-    "high_roller": {"name": "High Roller Case",   "emoji": "🎰", "cost": 22_500_000_000, "color": 0xFF6600},
-    "emerald":     {"name": "Emerald Case",       "emoji": "💚", "cost": 17_500_000_000, "color": 0x50C878},
-    "ruby":        {"name": "Ruby Case",          "emoji": "🔴", "cost": 12_500_000_000, "color": 0x9B111E},
-    "platinum":    {"name": "Platinum Case",      "emoji": "💿", "cost":  8_000_000_000, "color": 0xE5E4E2},
-    "gold":        {"name": "Gold Case",          "emoji": "🥇", "cost":  5_500_000_000, "color": 0xFFD700},
-    "silver":      {"name": "Silver Case",        "emoji": "🥈", "cost":  3_800_000_000, "color": 0xC0C0C0},
-    "bronze":      {"name": "Bronze Case",        "emoji": "🥉", "cost":  2_500_000_000, "color": 0xCD7F32},
+    "champion":    {"name": "Champion Case",      "emoji": "👑", "cost":    750_000_000, "color": 0xFFD700},
+    "diamond_whale":{"name": "Diamond Whale Case","emoji": "💎", "cost":    550_000_000, "color": 0xB9F2FF},
+    "legend":      {"name": "Legend Case",        "emoji": "🏆", "cost":    400_000_000, "color": 0xFFD700},
+    "whale":       {"name": "Whale Case",         "emoji": "🐋", "cost":    300_000_000, "color": 0x1E90FF},
+    "high_roller": {"name": "High Roller Case",   "emoji": "🎰", "cost":    225_000_000, "color": 0xFF6600},
+    "emerald":     {"name": "Emerald Case",       "emoji": "💚", "cost":    175_000_000, "color": 0x50C878},
+    "ruby":        {"name": "Ruby Case",          "emoji": "🔴", "cost":    125_000_000, "color": 0x9B111E},
+    "platinum":    {"name": "Platinum Case",      "emoji": "💿", "cost":     80_000_000, "color": 0xE5E4E2},
+    "gold":        {"name": "Gold Case",          "emoji": "🥇", "cost":     55_000_000, "color": 0xFFD700},
+    "silver":      {"name": "Silver Case",        "emoji": "🥈", "cost":     38_000_000, "color": 0xC0C0C0},
+    "bronze":      {"name": "Bronze Case",        "emoji": "🥉", "cost":     25_000_000, "color": 0xCD7F32},
 }
 
 # Prize tables: (weight, value, label)
@@ -14784,82 +15056,82 @@ CASES = {
 # All values in gems (1 unit = 1 gem)
 CASE_PRIZES = {
     "champion": [
-        (62,     52,500,000,000, "Champion Crumbs"),  # Common     — 0.7x  (525.00M)
-        (24,     63,750,000,000, "Crown Fragment"),  # Uncommon   — 0.85x  (637.50M)
-        (10,     93,750,000,000, "Champion Relic"),  # Legendary  — 1.25x  (937.50M)
-        ( 3,    262,500,000,000, "Hall of Champions"),  # Mythical   — 3.5x  (2625.00M)
-        ( 1,    375,000,000,000, "The Crown Jewel"),  # OG         — 5.0x  (3750.00M)
-    ],  # case cost = 750M display
+        (62,    525_000_000, "Champion Crumbs"),   # Common     — 0.70x (525M)
+        (24,    637_500_000, "Crown Fragment"),     # Uncommon   — 0.85x (637.5M)
+        (10,    937_500_000, "Champion Relic"),     # Legendary  — 1.25x (937.5M)
+        ( 3,  2_625_000_000, "Hall of Champions"),  # Mythical   — 3.5x  (2.625B)
+        ( 1,  3_750_000_000, "The Crown Jewel"),    # OG         — 5.0x  (3.75B)
+    ],  # case cost = 750M
     "diamond_whale": [
-        (62,     38,500,000,000, "Diamond Dust"),  # Common     — 0.7x  (385.00M)
-        (24,     46,750,000,000, "Whale Tooth"),  # Uncommon   — 0.85x  (467.50M)
-        (10,     68,750,000,000, "Diamond Vault"),  # Legendary  — 1.25x  (687.50M)
-        ( 3,    192,500,000,000, "Leviathan Drop"),  # Mythical   — 3.5x  (1925.00M)
-        ( 1,    275,000,000,000, "Diamond Genesis"),  # OG         — 5.0x  (2750.00M)
-    ],  # case cost = 550M display
+        (62,    385_000_000, "Diamond Dust"),       # Common     — 0.70x (385M)
+        (24,    467_500_000, "Whale Tooth"),         # Uncommon   — 0.85x (467.5M)
+        (10,    687_500_000, "Diamond Vault"),       # Legendary  — 1.25x (687.5M)
+        ( 3,  1_925_000_000, "Leviathan Drop"),      # Mythical   — 3.5x  (1.925B)
+        ( 1,  2_750_000_000, "Diamond Genesis"),     # OG         — 5.0x  (2.75B)
+    ],  # case cost = 550M
     "legend": [
-        (62,     28,000,000,000, "Legend Scraps"),  # Common     — 0.7x  (280.00M)
-        (24,     34,000,000,000, "Crypto Vault"),  # Uncommon   — 0.85x  (340.00M)
-        (10,     50,000,000,000, "Legend Shard"),  # Legendary  — 1.25x  (500.00M)
-        ( 3,    140,000,000,000, "Hall of Fame Drop"),  # Mythical   — 3.5x  (1400.00M)
-        ( 1,    200,000,000,000, "Satoshi Throne"),  # OG         — 5.0x  (2000.00M)
-    ],  # case cost = 400M display
+        (62,    280_000_000, "Legend Scraps"),       # Common     — 0.70x (280M)
+        (24,    340_000_000, "Crypto Vault"),         # Uncommon   — 0.85x (340M)
+        (10,    500_000_000, "Legend Shard"),         # Legendary  — 1.25x (500M)
+        ( 3,  1_400_000_000, "Hall of Fame Drop"),    # Mythical   — 3.5x  (1.4B)
+        ( 1,  2_000_000_000, "Satoshi Throne"),       # OG         — 5.0x  (2B)
+    ],  # case cost = 400M
     "whale": [
-        (62,     21,000,000,000, "Whale Drip"),  # Common     — 0.7x  (210.00M)
-        (24,     25,500,000,000, "Deep Sea Chip"),  # Uncommon   — 0.85x  (255.00M)
-        (10,     37,500,000,000, "Leviathan Cache"),  # Legendary  — 1.25x  (375.00M)
-        ( 3,    105,000,000,000, "Whale Genesis"),  # Mythical   — 3.5x  (1050.00M)
-        ( 1,    150,000,000,000, "Ocean Throne"),  # OG         — 5.0x  (1500.00M)
-    ],  # case cost = 300M display
+        (62,    210_000_000, "Whale Drip"),           # Common     — 0.70x (210M)
+        (24,    255_000_000, "Deep Sea Chip"),         # Uncommon   — 0.85x (255M)
+        (10,    375_000_000, "Leviathan Cache"),       # Legendary  — 1.25x (375M)
+        ( 3,  1_050_000_000, "Whale Genesis"),         # Mythical   — 3.5x  (1.05B)
+        ( 1,  1_500_000_000, "Ocean Throne"),          # OG         — 5.0x  (1.5B)
+    ],  # case cost = 300M
     "high_roller": [
-        (62,     15,749,999,999, "Table Crumbs"),  # Common     — 0.7x  (157.50M)
-        (24,     19,125,000,000, "Casino Chip"),  # Uncommon   — 0.85x  (191.25M)
-        (10,     28,125,000,000, "High Stakes Pot"),  # Legendary  — 1.25x  (281.25M)
-        ( 3,     78,750,000,000, "VIP Vault"),  # Mythical   — 3.5x  (787.50M)
-        ( 1,    112,500,000,000, "The House Edge"),  # OG         — 5.0x  (1125.00M)
-    ],  # case cost = 225M display
+        (62,    157_500_000, "Table Crumbs"),          # Common     — 0.70x (157.5M)
+        (24,    191_250_000, "Casino Chip"),            # Uncommon   — 0.85x (191.25M)
+        (10,    281_250_000, "High Stakes Pot"),        # Legendary  — 1.25x (281.25M)
+        ( 3,    787_500_000, "VIP Vault"),              # Mythical   — 3.5x  (787.5M)
+        ( 1,  1_125_000_000, "The House Edge"),         # OG         — 5.0x  (1.125B)
+    ],  # case cost = 225M
     "emerald": [
-        (62,     12,250,000,000, "Green Dust"),  # Common     — 0.7x  (122.50M)
-        (24,     14,875,000,000, "Emerald Shard"),  # Uncommon   — 0.85x  (148.75M)
-        (10,     21,875,000,000, "Forest Vault"),  # Legendary  — 1.25x  (218.75M)
-        ( 3,     61,250,000,000, "Emerald Throne"),  # Mythical   — 3.5x  (612.50M)
-        ( 1,     87,500,000,000, "Crown Jewel"),  # OG         — 5.0x  (875.00M)
-    ],  # case cost = 175M display
+        (62,    122_500_000, "Green Dust"),             # Common     — 0.70x (122.5M)
+        (24,    148_750_000, "Emerald Shard"),           # Uncommon   — 0.85x (148.75M)
+        (10,    218_750_000, "Forest Vault"),            # Legendary  — 1.25x (218.75M)
+        ( 3,    612_500_000, "Emerald Throne"),          # Mythical   — 3.5x  (612.5M)
+        ( 1,    875_000_000, "Crown Jewel"),             # OG         — 5.0x  (875M)
+    ],  # case cost = 175M
     "ruby": [
-        (62,      8,750,000,000, "Blood Drop"),  # Common     — 0.7x  (87.50M)
-        (24,     10,625,000,000, "Ruby Shard"),  # Uncommon   — 0.85x  (106.25M)
-        (10,     15,625,000,000, "Crimson Vault"),  # Legendary  — 1.25x  (156.25M)
-        ( 3,     43,750,000,000, "Ruby Throne"),  # Mythical   — 3.5x  (437.50M)
-        ( 1,     62,500,000,000, "Red Genesis"),  # OG         — 5.0x  (625.00M)
-    ],  # case cost = 125M display
+        (62,     87_500_000, "Blood Drop"),              # Common     — 0.70x (87.5M)
+        (24,    106_250_000, "Ruby Shard"),               # Uncommon   — 0.85x (106.25M)
+        (10,    156_250_000, "Crimson Vault"),             # Legendary  — 1.25x (156.25M)
+        ( 3,    437_500_000, "Ruby Throne"),               # Mythical   — 3.5x  (437.5M)
+        ( 1,    625_000_000, "Red Genesis"),               # OG         — 5.0x  (625M)
+    ],  # case cost = 125M
     "platinum": [
-        (62,      5,600,000,000, "Shiny Crumbs"),  # Common     — 0.7x  (56.00M)
-        (24,      6,800,000,000, "Platinum Dust"),  # Uncommon   — 0.85x  (68.00M)
-        (10,     10,000,000,000, "Steel Vault"),  # Legendary  — 1.25x  (100.00M)
-        ( 3,     28,000,000,000, "Platinum Relic"),  # Mythical   — 3.5x  (280.00M)
-        ( 1,     40,000,000,000, "Platinum Genesis"),  # OG         — 5.0x  (400.00M)
-    ],  # case cost = 80M display
+        (62,     56_000_000, "Shiny Crumbs"),              # Common     — 0.70x (56M)
+        (24,     68_000_000, "Platinum Dust"),              # Uncommon   — 0.85x (68M)
+        (10,    100_000_000, "Steel Vault"),                # Legendary  — 1.25x (100M)
+        ( 3,    280_000_000, "Platinum Relic"),             # Mythical   — 3.5x  (280M)
+        ( 1,    400_000_000, "Platinum Genesis"),           # OG         — 5.0x  (400M)
+    ],  # case cost = 80M
     "gold": [
-        (62,      3,849,999,999, "Pocket Gold"),  # Common     — 0.7x  (38.50M)
-        (24,      4,675,000,000, "Gold Chip"),  # Uncommon   — 0.85x  (46.75M)
-        (10,      6,875,000,000, "Gold Vault"),  # Legendary  — 1.25x  (68.75M)
-        ( 3,     19,250,000,000, "Gold Throne"),  # Mythical   — 3.5x  (192.50M)
-        ( 1,     27,500,000,000, "Gold Genesis"),  # OG         — 5.0x  (275.00M)
-    ],  # case cost = 55M display
+        (62,     38_500_000, "Pocket Gold"),               # Common     — 0.70x (38.5M)
+        (24,     46_750_000, "Gold Chip"),                  # Uncommon   — 0.85x (46.75M)
+        (10,     68_750_000, "Gold Vault"),                 # Legendary  — 1.25x (68.75M)
+        ( 3,    192_500_000, "Gold Throne"),                # Mythical   — 3.5x  (192.5M)
+        ( 1,    275_000_000, "Gold Genesis"),               # OG         — 5.0x  (275M)
+    ],  # case cost = 55M
     "silver": [
-        (62,      2,660,000,000, "Spare Change"),  # Common     — 0.7x  (26.60M)
-        (24,      3,230,000,000, "Silver Dust"),  # Uncommon   — 0.85x  (32.30M)
-        (10,      4,750,000,000, "Silver Vault"),  # Legendary  — 1.25x  (47.50M)
-        ( 3,     13,300,000,000, "Silver Throne"),  # Mythical   — 3.5x  (133.00M)
-        ( 1,     19,000,000,000, "Silver Genesis"),  # OG         — 5.0x  (190.00M)
-    ],  # case cost = 38M display
+        (62,     26_600_000, "Spare Change"),               # Common     — 0.70x (26.6M)
+        (24,     32_300_000, "Silver Dust"),                 # Uncommon   — 0.85x (32.3M)
+        (10,     47_500_000, "Silver Vault"),                # Legendary  — 1.25x (47.5M)
+        ( 3,    133_000_000, "Silver Throne"),               # Mythical   — 3.5x  (133M)
+        ( 1,    190_000_000, "Silver Genesis"),              # OG         — 5.0x  (190M)
+    ],  # case cost = 38M
     "bronze": [
-        (62,      1,750,000,000, "Crumbs"),  # Common     — 0.7x  (17.50M)
-        (24,      2,125,000,000, "Bronze Dust"),  # Uncommon   — 0.85x  (21.25M)
-        (10,      3,125,000,000, "Bronze Vault"),  # Legendary  — 1.25x  (31.25M)
-        ( 3,      8,750,000,000, "Bronze Throne"),  # Mythical   — 3.5x  (87.50M)
-        ( 1,     12,500,000,000, "Bronze Genesis"),  # OG         — 5.0x  (125.00M)
-    ],  # case cost = 25M display
+        (62,     17_500_000, "Crumbs"),                      # Common     — 0.70x (17.5M)
+        (24,     21_250_000, "Bronze Dust"),                  # Uncommon   — 0.85x (21.25M)
+        (10,     31_250_000, "Bronze Vault"),                  # Legendary  — 1.25x (31.25M)
+        ( 3,     87_500_000, "Bronze Throne"),                 # Mythical   — 3.5x  (87.5M)
+        ( 1,    125_000_000, "Bronze Genesis"),                # OG         — 5.0x  (125M)
+    ],  # case cost = 25M
 }
 
 PRIZE_TIER_EMOJIS  = ["⬜", "🟩", "🟣", "🔴", "🟡"]
