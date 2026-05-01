@@ -4728,8 +4728,6 @@ class RouletteView(BaseGameView):
             print(f"[RESULT DISPLAY FAILED] {e}")
         finally:
             self.stop()
-
-        self.stop()  # stop after result is shown
         log_e = discord.Embed(title="◉  ROULETTE", color=color)
         log_e.add_field(name="Player", value=self.creator.mention,    inline=True)
         log_e.add_field(name="Bet",    value=format_amount(self.bet), inline=True)
@@ -4828,7 +4826,7 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
             f"╔══════════════════════╗\n"
             f"║  Wager  {format_amount(amt):>14}  ║\n"
             f"╚══════════════════════╝\n"
-            f"🔴 **Red** — 2×  ·  ⚫ **Black** — 2×  ·  🟡 **Yellow** — 6×\n"
+            f"🔴 **Red** — 2×  ·  🔵 **Blue** — 2×  ·  🟡 **Yellow** — 6×\n"
             f"Pick your colour:"
         )
     )
