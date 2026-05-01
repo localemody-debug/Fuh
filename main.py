@@ -2157,6 +2157,23 @@ async def cmd_balance(interaction: discord.Interaction):
     _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
+
+@bot.tree.command(name="unlock", description="Stuck in a game? Use this to unlock yourself.")
+async def cmd_unlock(interaction: discord.Interaction):
+    uid = interaction.user.id
+    if uid in _active_games:
+        _end_game_session(uid)
+        await interaction.response.send_message(
+            "🔓 You've been unlocked! You can play games again.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            "✅ You're not locked — you can already play games.",
+            ephemeral=True
+        )
+
+
 @bot.tree.command(name="rank", description="View your wagering rank and progress.")
 async def cmd_rank(interaction: discord.Interaction):
     conn = await get_conn()
@@ -2444,22 +2461,16 @@ async def cmd_tip(interaction: discord.Interaction, user: discord.Member, amount
     _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
-    log_e = discord.Embed(
-        color=0xF59E0B,
-        description=(
-            f"## 💸 Tip Transaction\n"
-            f"👤 **From:** {interaction.user.mention} `{interaction.user.id}`\n"
-            f"👤 **To:** {user.mention} `{user.id}`\n"
-            f"💰 **Amount:** {format_amount(amt)}\n"
-            f"\n"
-            f"**📊 New Balances**\n"
-            f"{interaction.user.mention}: **{format_amount(sender_bal)}**\n"
-            f"{user.mention}: **{format_amount(recv_bal)}**\n"
-            f"\n"
-            f"**🎯 Wager Requirement Added**\n"
-            f"{user.mention} must wager: **{format_amount(amt)}**"
-        )
-    )
+    log_e = discord.Embed(color=0xF59E0B, title="💸 Tip Transaction")
+    log_e.add_field(name="From",   value=f"{interaction.user.mention} `{interaction.user.id}`", inline=True)
+    log_e.add_field(name="To",     value=f"{user.mention} `{user.id}`",                         inline=True)
+    log_e.add_field(name="Amount", value=format_amount(amt),                                     inline=True)
+    log_e.add_field(name="New Balances",
+                    value=f"{interaction.user.mention}: **{format_amount(sender_bal)}**\n{user.mention}: **{format_amount(recv_bal)}**",
+                    inline=False)
+    log_e.add_field(name="Wager Req Added",
+                    value=f"{user.mention} must wager **{format_amount(amt)}**",
+                    inline=False)
     log_e.set_footer(text=now_ts())
     await send_tip_log(log_e)
 
@@ -2762,23 +2773,21 @@ class BaseGameView(discord.ui.View):
                        error: Exception, item) -> None:
         import traceback
         label = getattr(item, 'label', None) or getattr(item, 'custom_id', str(item))
-        print(f"\
-[GAME ERROR] ══════════════════════════════════════")
-        print(f"  Game:   {self.__class__.__name__}")
-        print(f"  Button: {label}")
-        print(f"  Error:  {type(error).__name__}: {error}")
-        print(f"  User:   {getattr(self, 'creator', 'unknown')}")
+        print(f"[GAME ERROR] {self.__class__.__name__} / {label}: {type(error).__name__}: {error}")
         traceback.print_exc()
-        print(f"══════════════════════════════════════════════════\
-")
-        msg = "❌ Something went wrong resolving the game. Your bet has been refunded if it was deducted."
+        creator = getattr(self, 'creator', None)
+        if creator:
+            _end_game_session(creator.id)
+        self.stop()
+        msg = "❌ Something went wrong. Your bet has been refunded if it was deducted."
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
         except Exception as send_err:
-            print(f"[GAME ERROR] Also failed to send error message: {send_err}")
+            print(f"[GAME ERROR] Failed to send error message: {send_err}")
+
 
 class RainView(discord.ui.View):
     def __init__(self, host: discord.User, total: int, end_time: float, secs: int):
@@ -3556,6 +3565,7 @@ class CoinflipView(BaseGameView):
                     await update_balance(conn, self.opponent.id, self.bet)
             finally:
                 await release_conn(conn)
+        await super().on_timeout()
 
     async def _resolve(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -3909,6 +3919,7 @@ class ProgressiveCoinflipView(BaseGameView):
         elif not self.done:
             conn = await get_conn()
             try:
+                await super().on_timeout()
                 await update_balance(conn, self.creator.id, self.initial_bet)
             finally:
                 await release_conn(conn)
@@ -3923,6 +3934,7 @@ class ProgressiveCoinflipView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
 
 @bot.tree.command(name="progressivecoinflip", description="Double your pot each round — walk away before it's gone!")
 @app_commands.describe(bet="Bet amount e.g. 100k, 1M")
@@ -4522,7 +4534,7 @@ _RLT_COLORS   = [(_RLT_RED, "RED"), (_RLT_BLUE, "BLUE"), (_RLT_YELLOW, "YELLOW")
 _RLT_EMOJI    = {"RED": "🔴", "BLUE": "🔵", "YELLOW": "🟡"}
 
 def _rlt_make_frame(color, color_key, phase_label, is_result=False, won=None):
-    TARGET = 500
+    TARGET = 400
     SCALE  = 2
     W, H   = TARGET * SCALE, TARGET * SCALE
     SX = int(0.133*W); SY = int(0.367*H)
@@ -4576,10 +4588,9 @@ def _rlt_make_frame(color, color_key, phase_label, is_result=False, won=None):
     return img.resize((TARGET, TARGET), Image.LANCZOS)
 
 def build_roulette_gif(result_key: str, won: bool) -> bytes:
-    """Generate the full roulette spin GIF ending on result_key.
-    ~60 fast frames, 25 slow-down frames, 3 settle frames, 5 result hold frames.
-    Single centered slot, no text labels on the color block.
-    """
+    """Generate the roulette spin GIF.
+    40 fast + 15 slowdown + 3 settle + 3 result = 61 frames.
+    Renders at 800px internal, outputs 400px to keep file size small."""
     if not _PIL_AVAILABLE:
         return b""
 
@@ -4588,38 +4599,33 @@ def build_roulette_gif(result_key: str, won: bool) -> bytes:
     frames = []
     durs   = []
 
-    for i in range(60):
-        ci = i % 3
-        frames.append(_rlt_make_frame(colors[ci], keys[ci], "SPINNING..."))
-        durs.append(30)
+    for i in range(40):
+        frames.append(_rlt_make_frame(colors[i % 3], keys[i % 3], "SPINNING..."))
+        durs.append(35)
 
-    for i in range(25):
-        ci = (60 + i) % 3
-        delay = int(30 + (i ** 2.0) * 3.5)
+    for i in range(15):
+        ci = (40 + i) % 3
         frames.append(_rlt_make_frame(colors[ci], keys[ci], "SPINNING..."))
-        durs.append(min(delay, 600))
+        durs.append(min(int(35 + (i ** 2.1) * 5), 700))
 
     ri = keys.index(result_key) if result_key in keys else 0
-    settle = [
-        (colors[(ri - 2) % 3], keys[(ri - 2) % 3], 400),
-        (colors[(ri - 1) % 3], keys[(ri - 1) % 3], 600),
-        (colors[ri],            keys[ri],            900),
-    ]
-    for color, key, dur in settle:
+    for color, key, dur in [
+        (colors[(ri-2) % 3], keys[(ri-2) % 3], 420),
+        (colors[(ri-1) % 3], keys[(ri-1) % 3], 620),
+        (colors[ri],          keys[ri],          950),
+    ]:
         frames.append(_rlt_make_frame(color, key, "SPINNING..."))
         durs.append(dur)
 
     res_color = {"RED": _RLT_RED, "BLUE": _RLT_BLUE, "YELLOW": _RLT_YELLOW}.get(result_key, _RLT_RED)
-    for _ in range(5):
+    for _ in range(3):
         frames.append(_rlt_make_frame(res_color, result_key, "RESULT", is_result=True, won=won))
-        durs.append(800)
+        durs.append(900)
 
-    palette_frames = [f.convert("RGB").quantize(colors=128, method=Image.Quantize.MEDIANCUT) for f in frames]
-
+    pf = [f.convert("RGB").quantize(colors=96, method=Image.Quantize.MEDIANCUT) for f in frames]
     buf = io.BytesIO()
-    palette_frames[0].save(buf, format="GIF", save_all=True,
-                           append_images=palette_frames[1:],
-                           duration=durs, loop=0, optimize=True)
+    pf[0].save(buf, format="GIF", save_all=True, append_images=pf[1:],
+               duration=durs, loop=0, optimize=True)
     buf.seek(0)
     return buf.read()
 
@@ -4640,9 +4646,6 @@ class RouletteView(BaseGameView):
             self.used = True
 
         await interaction.response.defer()
-
-        seed      = f"{interaction.user.id}-{time.time_ns()}-{random.random()}"
-        spin_hash = hashlib.sha256(seed.encode()).hexdigest()
 
         _rlt_forced = _force_result.pop(self.creator.id, None)
         if _rlt_forced == "win":
@@ -4685,7 +4688,6 @@ class RouletteView(BaseGameView):
         except Exception as _db_err:
             print(f"[ROULETTE DB ERROR] {_db_err}")
 
-        roul_net   = payout - self.bet
         profit_str = f"+{format_amount(payout - self.bet)}" if won else f"-{format_amount(self.bet)}"
 
         try:
@@ -4724,6 +4726,8 @@ class RouletteView(BaseGameView):
                 await interaction.followup.send(embed=result_e)
         except Exception as e:
             print(f"[RESULT DISPLAY FAILED] {e}")
+        finally:
+            self.stop()
 
         self.stop()  # stop after result is shown
         log_e = discord.Embed(title="◉  ROULETTE", color=color)
@@ -4752,6 +4756,7 @@ class RouletteView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
 
     @discord.ui.button(label="🔴 Red (2x)", style=discord.ButtonStyle.danger)
     async def red_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5119,6 +5124,7 @@ class BaccaratView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
 
     @discord.ui.button(label="👤 Player (1:1)", style=discord.ButtonStyle.primary)
     async def player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5412,6 +5418,8 @@ class BlackjackView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
+        await super().on_timeout()
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.blurple, emoji="🃏")
     async def hit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
@@ -5772,6 +5780,7 @@ class BlackjackDiceView(BaseGameView):
             except Exception as e:
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, emoji="🎲")
     async def hit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
@@ -6004,6 +6013,7 @@ class WarView(BaseGameView):
                     await update_balance(conn, self.opponent.id, self.bet)
             finally:
                 await release_conn(conn)
+        await super().on_timeout()
 
     async def _resolve(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
@@ -6550,14 +6560,13 @@ class HiloView(BaseGameView):
                     desc = f"Game timed out — bet of **{format_amount(self.bet)}** refunded."
             finally:
                 await release_conn(conn)
-            try:
+        try:
                 await self._original_message.edit(
                     embed=discord.Embed(color=C_DARK, description=f"## 🃏  HI-LO — EXPIRED\n> {desc}"),
                     view=None)
-            except Exception as e:
-
+        except Exception as e:
                 print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        await super().on_timeout()
 
     @discord.ui.button(label="✅ Higher", style=discord.ButtonStyle.green)
     async def higher_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6776,23 +6785,20 @@ def draw_towers_grid(tower: list, current_row: int, revealed: dict,
     buf.seek(0)
     return buf.read()
 
-async def _tw_edit(interaction: discord.Interaction, embed: discord.Embed, view=None):
-    """Edit the Towers message with the Pillow canvas PNG.
-    After defer(), interaction.edit_original_response() uses Webhook.edit_message()
-    internally which DOES support attachments= in discord.py 2.x."""
+async def _tw_edit(interaction: discord.Interaction, embed: discord.Embed,
+                   view=None, orig_msg=None):
+    """Edit the Towers message.
+    Mid-game: update embed+view only (no image).
+    Result frame: update embed, then send tower grid as separate downloadable image."""
     img = getattr(embed, "_tw_img", None)
     try:
-        if img:
-            f = discord.File(io.BytesIO(img), filename="towers_grid.png")
-            if view is not None:
-                await interaction.edit_original_response(embed=embed, view=view, attachments=[f])
-            else:
-                await interaction.edit_original_response(embed=embed, attachments=[f])
+        if view is not None:
+            await interaction.edit_original_response(embed=embed, view=view)
         else:
-            if view is not None:
-                await interaction.edit_original_response(embed=embed, view=view)
-            else:
-                await interaction.edit_original_response(embed=embed)
+            await interaction.edit_original_response(embed=embed, view=None)
+            if img:
+                f = discord.File(io.BytesIO(img), filename="towers_result.png")
+                await interaction.followup.send(file=f)
     except Exception as e:
         print(f"[TW_EDIT ERROR] {e}")
 
@@ -6891,10 +6897,9 @@ class TowersView(BaseGameView):
         embed.set_author(name=f"{self.creator.display_name}  ·  Towers", icon_url=self.creator.display_avatar.url)
         embed.set_footer(text=f"Easy Mode  ·  1 bomb per row")
 
-        if _PIL_AVAILABLE:
+        if _PIL_AVAILABLE and outcome != "playing":
             img_bytes = draw_towers_grid(self.tower, self.current_row, self.revealed)
             if img_bytes:
-                embed.set_image(url="attachment://towers_grid.png")
                 embed._tw_img = img_bytes
         return embed
 
@@ -6952,7 +6957,7 @@ class TowersView(BaseGameView):
                     await release_conn(conn)
 
                 try:
-                    await _tw_edit(interaction, self.game_embed("bomb"), view=None)
+                    await _tw_edit(interaction, self.game_embed("bomb"), view=None, orig_msg=self._original_message)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -6999,7 +7004,7 @@ class TowersView(BaseGameView):
                         await release_conn(conn)
 
                     try:
-                        await _tw_edit(interaction, self.game_embed("cleared"), view=None)
+                        await _tw_edit(interaction, self.game_embed("cleared"), view=None, orig_msg=self._original_message)
                     except Exception as _result_err:
                         print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7058,7 +7063,7 @@ class TowersView(BaseGameView):
                 await release_conn(conn)
 
             try:
-                await _tw_edit(interaction, self.game_embed("win"), view=None)
+                await _tw_edit(interaction, self.game_embed("win"), view=None, orig_msg=self._original_message)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7102,6 +7107,7 @@ class TowersView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
 
     @discord.ui.button(label="1", style=discord.ButtonStyle.blurple)
     async def col0_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7178,13 +7184,7 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
     view.bet_deducted = True
     view._update_buttons()
     _init_embed = view.game_embed()
-    _init_img   = getattr(_init_embed, "_tw_img", None)
-    if _init_img:
-        await interaction.response.send_message(
-            embed=_init_embed, view=view,
-            file=discord.File(io.BytesIO(_init_img), filename="towers_grid.png"))
-    else:
-        await interaction.response.send_message(embed=_init_embed, view=view)
+    await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
 
 RPS_MOVES    = ["rock", "paper", "scissors"]
@@ -7305,23 +7305,20 @@ def rps_card_grid(history: list) -> str:
         lines.append(f"`R{i:02}` {RPS_EMOJI[p]} **vs** {RPS_EMOJI[b]}  \u00b7  {badge}  \u00b7  `{mult:.2f}x`")
     return "\n".join(lines)
 
-async def _rps_edit(interaction: discord.Interaction, embed: discord.Embed, view=None):
-    """Edit the RPS message with the Pillow card-grid PNG.
-    After defer(), interaction.edit_original_response() uses Webhook.edit_message()
-    internally which supports attachments= in discord.py 2.x."""
+async def _rps_edit(interaction: discord.Interaction, embed: discord.Embed,
+                    view=None, orig_msg=None):
+    """Edit the RPS message.
+    Mid-game: update embed+view only (no image).
+    Result frame: update embed, then send image as separate downloadable attachment."""
     img = getattr(embed, "_rps_img", None)
     try:
-        if img:
-            f = discord.File(io.BytesIO(img), filename="rps_grid.png")
-            if view is not None:
-                await interaction.edit_original_response(embed=embed, view=view, attachments=[f])
-            else:
-                await interaction.edit_original_response(embed=embed, attachments=[f])
+        if view is not None:
+            await interaction.edit_original_response(embed=embed, view=view)
         else:
-            if view is not None:
-                await interaction.edit_original_response(embed=embed, view=view)
-            else:
-                await interaction.edit_original_response(embed=embed)
+            await interaction.edit_original_response(embed=embed, view=None)
+            if img:
+                f = discord.File(io.BytesIO(img), filename="rps_results.png")
+                await interaction.followup.send(file=f)
     except Exception as e:
         print(f"[RPS_EDIT ERROR] {e}")
 
@@ -7337,7 +7334,10 @@ class RPSView(BaseGameView):
         self.bet_deducted  = False
         self._lock         = asyncio.Lock()
         self._original_message = None
-        self._update_buttons()
+        try:
+            self._update_buttons()
+        except Exception:
+            pass
 
     @property
     def current_mult(self) -> float:
@@ -7425,11 +7425,10 @@ class RPSView(BaseGameView):
         embed.set_author(name=f"{self.creator.display_name}  ·  RPS", icon_url=self.creator.display_avatar.url)
         embed.set_footer(text=f"🔒 {hsh[:24]}...  ·  Round {self.total_rounds}")
 
-        if _PIL_AVAILABLE and self.history:
+        if _PIL_AVAILABLE and self.history and outcome in ("win", "loss"):
             img_bytes = draw_rps_grid(self.history, max_rounds=6)
             if img_bytes:
-                embed.set_image(url="attachment://rps_grid.png")
-                embed._rps_img = img_bytes  # stash so send/edit can attach it
+                embed._rps_img = img_bytes
         return embed
 
     async def _deduct_bet(self) -> bool:
@@ -7515,7 +7514,7 @@ class RPSView(BaseGameView):
                     await release_conn(conn)
 
                 try:
-                    await _rps_edit(interaction, self.game_embed("loss"), view=None)
+                    await _rps_edit(interaction, self.game_embed("loss"), view=None, orig_msg=self._original_message)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7561,7 +7560,7 @@ class RPSView(BaseGameView):
             await release_conn(conn)
 
         try:
-            await _rps_edit(interaction, self.game_embed("win"), view=None)
+            await _rps_edit(interaction, self.game_embed("win"), view=None, orig_msg=self._original_message)
         except Exception as _result_err:
             print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7597,9 +7596,8 @@ class RPSView(BaseGameView):
                     embed=discord.Embed(color=C_DARK, description=f"## ✊  RPS — EXPIRED\n> {desc}"),
                     view=None)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        await super().on_timeout()
 
     @discord.ui.button(label="Rock", style=discord.ButtonStyle.blurple, emoji="✊", row=0)
     async def rock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7669,13 +7667,7 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
     view = RPSView(interaction.user, amt)
     view.bet_deducted = True
     _init_embed = view.game_embed()
-    _init_img   = getattr(_init_embed, "_rps_img", None)
-    if _init_img:
-        await interaction.response.send_message(
-            embed=_init_embed, view=view,
-            file=discord.File(io.BytesIO(_init_img), filename="rps_grid.png"))
-    else:
-        await interaction.response.send_message(embed=_init_embed, view=view)
+    await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
 
 MINES_MAX_MULT  = 5000.0
@@ -7925,7 +7917,7 @@ class MinesView(BaseGameView):
                 finally:
                     await release_conn(conn)
                 try:
-                    await _rps_edit(interaction, self.game_embed("loss"), view=None)
+                    await _rps_edit(interaction, self.game_embed("loss"), view=None, orig_msg=self._original_message)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
                 log_e = discord.Embed(title="💣 Mines Result", color=C_LOSS)
@@ -8068,6 +8060,7 @@ class MinesView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
 
 @bot.tree.command(name="mines", description="Play Mines — find gems and avoid bombs!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M", mines="Number of mines (1-24)")
@@ -8434,6 +8427,8 @@ class ScratchView(BaseGameView):
 
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
+        await super().on_timeout()
+        await super().on_timeout()
 
 @bot.tree.command(name="scratch", description="Scratch and match 3 symbols to win big!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M")
@@ -9096,9 +9091,8 @@ class BalloonView(BaseGameView):
                     embed=discord.Embed(color=C_DARK, description=f"## 🎈  BALLOON — EXPIRED\n> {desc}"),
                     view=None)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        await super().on_timeout()
 
 SLOTS_SYMBOLS = [
     ("🍒", 30, 1.5,  0.5),
@@ -9633,7 +9627,7 @@ class ColorDiceView(BaseGameView):
                     view=None)
             except Exception as e:
                 print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        await super().on_timeout()
 
 @bot.tree.command(name="colordice", description="Pick a colour — match once for 2×, twice+ for refund, miss to lose!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M")
@@ -11639,27 +11633,7 @@ async def cmd_verifybalance(interaction: discord.Interaction):
     embed.set_footer(text=now_ts())
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="checkdb", description="[Admin] Verify DB file exists and is persistent.")
-@admin_only()
-async def cmd_checkdb(interaction: discord.Interaction):
-    conn = await get_conn()
-    try:
-        users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        pg_version = await conn.fetchval("SELECT version()")
-    except Exception as e:
-        print(f"[ERROR] checkdb: {type(e).__name__}: {e}")
-        await interaction.response.send_message("⚠️  Something went wrong — try again.", ephemeral=True)
-        return
-    finally:
-        await release_conn(conn)
 
-    embed = discord.Embed(title="🗂️ DB Persistence Check", color=C_WIN)
-    embed.add_field(name="Backend",    value="PostgreSQL ✅",          inline=False)
-    embed.add_field(name="Users",      value=str(users),               inline=True)
-    embed.add_field(name="Pool Size",  value=f"{_pool.get_size()}",    inline=True)
-    embed.add_field(name="Version",    value=pg_version[:60],          inline=False)
-    embed.set_footer(text=now_ts())
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="resetstats", description="[Admin] Reset a user's win/loss/streak.")
 @app_commands.describe(user="Target user")
