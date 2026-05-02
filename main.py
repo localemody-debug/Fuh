@@ -68,7 +68,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.51   # 51/49 edge across all games
+BOT_HOUSE_WIN        = 0.52   # 52/48 edge across all games
 BJ_DEALER_STAND      = 17    # Dealer stands at this total (16=player friendly, 17=standard, 19=heavy edge)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -1946,6 +1946,8 @@ async def send_reward_log(embed: discord.Embed):
 
 async def send_log(embed: discord.Embed):
     """Send to the game results log channel."""
+    if not LOG_CHANNEL_ID:
+        return
     ch = bot.get_channel(LOG_CHANNEL_ID)
     if ch is None:
         try:
@@ -1955,6 +1957,8 @@ async def send_log(embed: discord.Embed):
             return
     try:
         await ch.send(embed=embed)
+    except discord.Forbidden:
+        print(f"[GAME LOG] Missing send permission in #{ch.name}")
     except Exception as e:
         print(f"[GAME LOG] Failed to send: {e}")
 
@@ -1969,6 +1973,8 @@ async def send_finance_log(embed: discord.Embed):
             return
     try:
         await ch.send(embed=embed)
+    except discord.Forbidden:
+        print(f"[FINANCE LOG] Missing send permission in #{ch.name}")
     except Exception as e:
         print(f"[FINANCE LOG] Failed to send: {e}")
 
@@ -4519,115 +4525,12 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
     await interaction.response.send_message(embed=embed, view=view)
     view._original_message = await interaction.original_response()
 
-_RLT_BG       = (17,  18,  23)
-_RLT_RED      = (220,  38,  38)
-_RLT_BLUE     = (37,   99, 235)
-_RLT_YELLOW   = (202, 138,   4)
-_RLT_WHITE    = (255, 255, 255)
-_RLT_MUTED    = (100, 105, 140)
-_RLT_GOLD     = (234, 179,   8)
-_RLT_BORDER   = (50,   52,  75)
-_RLT_GREEN    = (34,  197,  94)
-_RLT_LOSS     = (239,  68,  68)
+ROULETTE_GIF_URLS = {
+    "RED":    "https://cdn.discordapp.com/attachments/1497626978004500580/1500040552727707800/roulette_red.gif?ex=69f6fd21&is=69f5aba1&hm=89d59321c368f45d72b912a33b8c2e959e75543d4dd46463142bc49f5a1f6ac4&",
+    "BLUE":   "https://cdn.discordapp.com/attachments/1497626978004500580/1500040249022218361/roulette_blue.gif?ex=69f6fcd8&is=69f5ab58&hm=8f582993bdca8e3e132031fd2ade3a22e6686f163321f673abb97c6fc4be29b3&",
+    "YELLOW": "https://cdn.discordapp.com/attachments/1497626978004500580/1500040306513543188/roulette_yellow.gif?ex=69f6fce6&is=69f5ab66&hm=0e9bb071c4320bbce27f265507a5775326201d31548ebf07ee3662e3d9e050ad&",
+}
 
-_RLT_COLORS   = [(_RLT_RED, "RED"), (_RLT_BLUE, "BLUE"), (_RLT_YELLOW, "YELLOW")]
-_RLT_EMOJI    = {"RED": "🔴", "BLUE": "🔵", "YELLOW": "🟡"}
-
-def _rlt_make_frame(color, color_key, phase_label, is_result=False, won=None):
-    TARGET = 400
-    SCALE  = 2
-    W, H   = TARGET * SCALE, TARGET * SCALE
-    SX = int(0.133*W); SY = int(0.367*H)
-    SW = int(0.733*W); SH = int(0.293*H); SR = int(0.047*W)
-
-    img  = Image.new("RGBA", (W, H), _RLT_BG)
-    draw = ImageDraw.Draw(img)
-    s    = max(1, W // 300)
-    try:
-        fb  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24*s)
-        ft  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12*s)
-        fw  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20*s)
-        fcn = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16*s)
-        fem = ImageFont.truetype("/usr/share/fonts/opentype/unifont/unifont.otf", 54*s)
-    except Exception:
-        fb = ft = fw = fcn = fem = ImageFont.load_default()
-
-    cx = W // 2
-
-    draw.text((cx, int(0.053*H)), color_key, font=fcn, fill=color, anchor="mm")
-    draw.text((cx, int(0.12*H)),  "◉  ROULETTE", font=fb, fill=_RLT_GOLD, anchor="mm")
-    draw.text((cx, int(0.2*H)),   phase_label, font=ft,
-              fill=_RLT_GOLD if is_result else _RLT_MUTED, anchor="mm")
-    draw.line([(int(0.067*W), int(0.247*H)), (int(0.933*W), int(0.247*H))],
-              fill=_RLT_BORDER, width=s)
-
-    ptr = (_RLT_GREEN if won else _RLT_LOSS) if is_result else _RLT_WHITE
-    pw  = int(0.037*W)
-    draw.polygon([(cx-pw, SY-int(0.067*H)), (cx+pw, SY-int(0.067*H)), (cx, SY-int(0.013*H))], fill=ptr)
-    draw.polygon([(cx-pw, SY+SH+int(0.067*H)), (cx+pw, SY+SH+int(0.067*H)), (cx, SY+SH+int(0.013*H))], fill=ptr)
-
-    brd = (_RLT_GREEN if won else _RLT_LOSS) if is_result else _RLT_WHITE
-    bw  = 4*s if is_result else 3*s
-    draw.rounded_rectangle([SX, SY, SX+SW, SY+SH], radius=SR, fill=color, outline=brd, width=bw)
-
-    emoji = _RLT_EMOJI[color_key]
-    try:
-        bb = draw.textbbox((0,0), emoji, font=fem)
-        tw, th = bb[2]-bb[0], bb[3]-bb[1]
-        draw.text((cx-tw//2-bb[0], SY+SH//2-th//2-bb[1]), emoji, font=fem, fill=_RLT_WHITE)
-    except Exception:
-        pass
-
-    if is_result:
-        txt = "🏆  YOU WIN!" if won else "💀  YOU LOST!"
-        draw.text((cx, int(0.913*H)), txt, font=fw,
-                  fill=_RLT_GREEN if won else _RLT_LOSS, anchor="mm")
-    else:
-        draw.text((cx, int(0.913*H)), "Spinning...", font=ft, fill=_RLT_MUTED, anchor="mm")
-
-    return img.resize((TARGET, TARGET), Image.LANCZOS)
-
-def build_roulette_gif(result_key: str, won: bool) -> bytes:
-    """Generate the roulette spin GIF.
-    40 fast + 15 slowdown + 3 settle + 3 result = 61 frames.
-    Renders at 800px internal, outputs 400px to keep file size small."""
-    if not _PIL_AVAILABLE:
-        return b""
-
-    colors = [c for c, _ in _RLT_COLORS]
-    keys   = [k for _, k in _RLT_COLORS]
-    frames = []
-    durs   = []
-
-    for i in range(40):
-        frames.append(_rlt_make_frame(colors[i % 3], keys[i % 3], "SPINNING..."))
-        durs.append(35)
-
-    for i in range(15):
-        ci = (40 + i) % 3
-        frames.append(_rlt_make_frame(colors[ci], keys[ci], "SPINNING..."))
-        durs.append(min(int(35 + (i ** 2.1) * 5), 700))
-
-    ri = keys.index(result_key) if result_key in keys else 0
-    for color, key, dur in [
-        (colors[(ri-2) % 3], keys[(ri-2) % 3], 420),
-        (colors[(ri-1) % 3], keys[(ri-1) % 3], 620),
-        (colors[ri],          keys[ri],          950),
-    ]:
-        frames.append(_rlt_make_frame(color, key, "SPINNING..."))
-        durs.append(dur)
-
-    res_color = {"RED": _RLT_RED, "BLUE": _RLT_BLUE, "YELLOW": _RLT_YELLOW}.get(result_key, _RLT_RED)
-    for _ in range(3):
-        frames.append(_rlt_make_frame(res_color, result_key, "RESULT", is_result=True, won=won))
-        durs.append(900)
-
-    pf = [f.convert("RGB").quantize(colors=96, method=Image.Quantize.MEDIANCUT) for f in frames]
-    buf = io.BytesIO()
-    pf[0].save(buf, format="GIF", save_all=True, append_images=pf[1:],
-               duration=durs, loop=0, optimize=True)
-    buf.seek(0)
-    return buf.read()
 
 class RouletteView(BaseGameView):
     def __init__(self, creator, bet):
@@ -4646,7 +4549,9 @@ class RouletteView(BaseGameView):
             self.used = True
 
         await interaction.response.defer()
+        msg = self._original_message
 
+        # ── Decide result ─────────────────────────────────────────────────────
         _rlt_forced = _force_result.pop(self.creator.id, None)
         if _rlt_forced == "win":
             result_emoji, result_name, result_multi = next(
@@ -4670,6 +4575,32 @@ class RouletteView(BaseGameView):
         payout = min(int(self.bet * result_multi), MAX_PAYOUT) if won else 0
         color  = C_WIN if won else C_LOSS
 
+        # ── Show spinning animation using the correct color GIF ───────────────
+        gif_url = ROULETTE_GIF_URLS.get(result_name.upper(), "")
+        gif_valid = bool(gif_url and gif_url.startswith("http"))
+
+        spin_e = discord.Embed(
+            color=C_GOLD,
+            description=(
+                f"## ◉  ROULETTE — ROLLING...\n"
+                f"┌─────────────────────────┐\n"
+                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
+                f"│ 🎯 **Pick** • {chosen_emoji} {chosen_name}\n"
+                f"│ 🌀 **Spinning the wheel...**\n"
+                f"└─────────────────────────┘"
+            )
+        )
+        if gif_valid:
+            spin_e.set_image(url=gif_url)
+        _brand_embed(spin_e)
+        try:
+            await msg.edit(embed=spin_e, view=None)
+        except Exception as e:
+            print(f"[ROULETTE ANIM] {e}")
+
+        await asyncio.sleep(3.5)
+
+        # ── DB ────────────────────────────────────────────────────────────────
         try:
             conn = await get_conn()
             try:
@@ -4677,7 +4608,6 @@ class RouletteView(BaseGameView):
                     payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "roulette")
                 await record_game(conn, self.creator.id, won, self.bet, payout, "roulette")
                 await log_transaction(conn, self.creator.id, "roulette", payout - self.bet)
-
                 if interaction.guild:
                     row = await get_user(conn, self.creator.id)
                     member = interaction.guild.get_member(self.creator.id)
@@ -4688,52 +4618,42 @@ class RouletteView(BaseGameView):
         except Exception as _db_err:
             print(f"[ROULETTE DB ERROR] {_db_err}")
 
-        profit_str = f"+{format_amount(payout - self.bet)}" if won else f"-{format_amount(self.bet)}"
-
-        try:
-            _res_gif = build_roulette_gif(result_name, won) if _PIL_AVAILABLE else b""
-        except Exception as _gif_err:
-            print(f"[ROULETTE GIF ERROR] {_gif_err}")
-            _res_gif = b""
+        # ── Result embed ──────────────────────────────────────────────────────
+        profit_str   = f"+{format_amount(payout - self.bet)}" if won else f"-{format_amount(self.bet)}"
+        outcome_line = "🏆 YOU WIN!" if won else "💀 YOU LOST!"
+        result_color_icon = "🟢" if won else "🔴"
 
         result_e = discord.Embed(color=color)
         result_e.set_author(name=f"{self.creator.display_name}  ·  Roulette",
                             icon_url=self.creator.display_avatar.url)
         result_e.description = (
-            f"```\n"
-            f"{'Pick:':<16} {chosen_emoji} {chosen_name}\n"
-            f"{'Result:':<16} {result_emoji} {result_name}\n"
-            f"{'Bet:':<16} {format_amount(self.bet)} 💎\n"
-            f"{'Multiplier:':<16} {result_multi}×\n"
-            f"{'Payout:':<16} {format_amount(payout)} 💎\n"
-            f"{'Profit:':<16} {profit_str} 💎\n"
-            f"```"
+            f"## {result_color_icon} {outcome_line}\n"
+            f"┌─────────────────────────┐\n"
+            f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
+            f"│ 🎯 **Pick** • {chosen_emoji} {chosen_name}\n"
+            f"│ 🎡 **Landed** • {result_emoji} {result_name}\n"
+            f"│ 📊 **Multi** • {result_multi}×\n"
+            f"│ 💸 **Profit** • {profit_str} 💎\n"
+            f"└─────────────────────────┘"
         )
-        if _res_gif:
-            result_e.set_image(url="attachment://roulette.gif")
+        if gif_valid:
+            result_e.set_image(url=gif_url)
         _brand_embed(result_e)
 
         try:
-            msg = self._original_message
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-            if _res_gif:
-                _rf = discord.File(io.BytesIO(_res_gif), filename="roulette.gif")
-                await interaction.followup.send(embed=result_e, file=_rf)
-            else:
-                await interaction.followup.send(embed=result_e)
+            await msg.edit(embed=result_e, view=None)
         except Exception as e:
-            print(f"[RESULT DISPLAY FAILED] {e}")
+            print(f"[ROULETTE RESULT] {e}")
         finally:
             self.stop()
+
         log_e = discord.Embed(title="◉  ROULETTE", color=color)
         log_e.add_field(name="Player", value=self.creator.mention,    inline=True)
         log_e.add_field(name="Bet",    value=format_amount(self.bet), inline=True)
-        log_e.add_field(name="Chosen", value=chosen_name,             inline=True)
-        log_e.add_field(name="Result", value=result_name,             inline=True)
+        log_e.add_field(name="Chosen", value=f"{chosen_emoji} {chosen_name}", inline=True)
+        log_e.add_field(name="Result", value=f"{result_emoji} {result_name}", inline=True)
         log_e.add_field(name="Won",    value="✅" if won else "❌",   inline=True)
+        log_e.add_field(name="Payout", value=format_amount(payout),   inline=True)
         log_e.set_footer(text=now_ts())
         await send_log(log_e)
 
@@ -4979,7 +4899,7 @@ class BaccaratView(BaseGameView):
         elif _bac_forced == "lose":
             player_bet_wins = False
         else:
-            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 47.5% player wins
+            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 48% player wins
 
         if bet_type == "Tie":
             winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
@@ -5000,6 +4920,7 @@ class BaccaratView(BaseGameView):
             won        = False
 
         is_push = (winner == "Tie" and bet_type in ("Player", "Banker"))
+        _bac_house_flip = random.random() < 0.03  # 3% extra house flip
         if won and not is_push and _bac_house_flip:
             won    = False
             payout = 0
@@ -6015,9 +5936,7 @@ class WarView(BaseGameView):
 
     async def _resolve(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
-            await interaction.response.defer()
-
-        msg = self._original_message
+            msg = self._original_message
         try:
             await msg.edit(embed=discord.Embed(color=C_GOLD, description="## ⚔️  WAR\n> Drawing cards..."), view=None)
         except Exception as e:
@@ -6382,7 +6301,7 @@ class HiloView(BaseGameView):
             elif _hilo_forced == "lose":
                 player_wins = False
             else:
-                player_wins = random.random() >= BOT_HOUSE_WIN  # 47.5% player wins
+                player_wins = random.random() >= BOT_HOUSE_WIN  # 48% player wins
 
             if direction == "higher":
                 valid_win  = list(range(prev_rank + 1, 14))
@@ -6693,113 +6612,6 @@ def render_tower(tower: list, current_row: int, revealed: dict) -> str:
 _TW_FONT_BOLD   = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 _TW_FONT_REG    = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-_TW_BG          = (17,  18,  23)
-_TW_CARD_ACTIVE = (32,  38,  65)
-_TW_SAFE_BG     = (20,  45,  30)
-_TW_BOMB_BG     = (55,  15,  15)
-_TW_EMPTY_BG    = (22,  23,  32)
-_TW_MULT_BG     = (30,  35,  55)
-_TW_SAFE_C      = (34, 197,  94)
-_TW_BOMB_C      = (239, 68,  68)
-_TW_ACTIVE_C    = (99, 155, 255)
-_TW_EMPTY_C     = (45,  48,  72)
-_TW_WHITE       = (255,255, 255)
-_TW_MUTED       = (110,115, 150)
-_TW_GOLD        = (234,179,   8)
-
-_TW_CELL_W=72; _TW_CELL_H=44; _TW_CELL_R=10; _TW_GAP=8
-_TW_PAD_X=16;  _TW_PAD_Y=16;  _TW_MULT_W=68
-
-def _tw_rr(draw, xy, r, fill, outline, w=2):
-    draw.rounded_rectangle(xy, radius=r, fill=fill, outline=outline, width=w)
-
-def draw_towers_grid(tower: list, current_row: int, revealed: dict,
-                     rows: int = 10, cols: int = 3) -> bytes:
-    """Draw the towers grid as a PNG and return bytes."""
-    if not _PIL_AVAILABLE:
-        return b""
-    W = _TW_PAD_X*2 + _TW_MULT_W + _TW_GAP + cols*_TW_CELL_W + (cols-1)*_TW_GAP
-    H = _TW_PAD_Y*2 + rows*(_TW_CELL_H+_TW_GAP) - _TW_GAP
-
-    img  = Image.new("RGBA", (W, H), _TW_BG)
-    draw = ImageDraw.Draw(img)
-    try:
-        fb = ImageFont.truetype(_TW_FONT_BOLD, 13)
-        fr = ImageFont.truetype(_TW_FONT_REG,  11)
-        fs = ImageFont.truetype(_TW_FONT_BOLD, 18)
-    except Exception:
-        fb = fr = fs = ImageFont.load_default()
-
-    mults = TOWER_ROW_MULTS
-
-    for vis_row in range(rows):
-        r = (rows - 1) - vis_row
-        y = _TW_PAD_Y + vis_row * (_TW_CELL_H + _TW_GAP)
-
-        m = 1.0
-        for i in range(r + 1):
-            m *= mults[min(i, len(mults)-1)]
-        mult_str = f"{m:.2f}x"
-
-        mx0=_TW_PAD_X; mx1=_TW_PAD_X+_TW_MULT_W
-        my0=y;          my1=y+_TW_CELL_H
-        if r == current_row:
-            mc = _TW_ACTIVE_C
-        elif r < current_row:
-            mc = _TW_SAFE_C
-        else:
-            mc = _TW_MUTED
-        _tw_rr(draw, [mx0,my0,mx1,my1], 8, _TW_MULT_BG, mc, 2)
-        draw.text(((mx0+mx1)//2,(my0+my1)//2), mult_str, font=fb, fill=mc, anchor="mm")
-
-        for c in range(cols):
-            cx0 = _TW_PAD_X + _TW_MULT_W + _TW_GAP + c*(_TW_CELL_W+_TW_GAP)
-            cx1 = cx0 + _TW_CELL_W
-            cy0 = y; cy1 = y + _TW_CELL_H
-            cx  = (cx0+cx1)//2; cy=(cy0+cy1)//2
-
-            if r in revealed:
-                picked = revealed[r]
-                if c == picked:
-                    tile   = tower[r][c]
-                    is_safe = tile == "✅"
-                    bg     = _TW_SAFE_BG  if is_safe else _TW_BOMB_BG
-                    brd    = _TW_SAFE_C   if is_safe else _TW_BOMB_C
-                    sym    = "✓"          if is_safe else "✕"
-                    sc     = _TW_SAFE_C   if is_safe else _TW_BOMB_C
-                    _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, bg, brd, 3)
-                    draw.text((cx,cy), sym, font=fs, fill=sc, anchor="mm")
-                else:
-                    _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_EMPTY_BG, _TW_EMPTY_C, 1)
-                    draw.text((cx,cy), "·", font=fs, fill=_TW_MUTED, anchor="mm")
-            elif r == current_row:
-                _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_CARD_ACTIVE, _TW_ACTIVE_C, 2)
-            else:
-                _tw_rr(draw, [cx0,cy0,cx1,cy1], _TW_CELL_R, _TW_EMPTY_BG, _TW_EMPTY_C, 1)
-                draw.text((cx,cy), "·", font=fr, fill=_TW_EMPTY_C, anchor="mm")
-
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    buf.seek(0)
-    return buf.read()
-
-async def _tw_edit(interaction: discord.Interaction, embed: discord.Embed,
-                   view=None, orig_msg=None):
-    """Edit the Towers message.
-    Mid-game: update embed+view only (no image).
-    Result frame: update embed, then send tower grid as separate downloadable image."""
-    img = getattr(embed, "_tw_img", None)
-    try:
-        if view is not None:
-            await interaction.edit_original_response(embed=embed, view=view)
-        else:
-            await interaction.edit_original_response(embed=embed, view=None)
-            if img:
-                f = discord.File(io.BytesIO(img), filename="towers_result.png")
-                await interaction.followup.send(file=f)
-    except Exception as e:
-        print(f"[TW_EDIT ERROR] {e}")
-
 class TowersView(BaseGameView):
     def __init__(self, creator: discord.User, bet: int, tower: list):
         super().__init__(timeout=180)
@@ -6843,62 +6655,27 @@ class TowersView(BaseGameView):
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
         if outcome == "playing":
             color = C_BLUE
-            title = "🗼  TOWERS"
-            status = f"📍 Row {self.current_row + 1} — Pick a tile"
+            title = "🗼  Towers"
         elif outcome == "win":
             color = C_WIN
-            title = "🗼  TOWERS — CASHED OUT 💰"
-            status = f"✅ Cashed out at row {self.rows_cleared}"
+            title = "🗼  Towers - Cashed Out"
         elif outcome == "bomb":
             color = C_LOSS
-            title = "🗼  TOWERS — 💥 BOOM"
-            status = f"💣 Hit a bomb on row {self.current_row + 1}"
+            title = "🗼  Towers - 💥 Boom"
         else:
             color = C_VIP
-            title = "🗼  TOWERS — CLEARED! 🏆"
-            status = "🏆 All 10 rows cleared!"
+            title = "🗼  Towers - Cleared!"
 
-        payout = min(self.current_winnings, MAX_PAYOUT)
-        profit = payout - self.bet
-        profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
-
-        if outcome in ("win", "cleared"):
-            desc = (
-                f"```\n"
-                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
-                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
-                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
-                f"{'Payout:':<18} {format_amount(payout)} 💎\n"
-                f"{'Profit:':<18} {profit_str} 💎\n"
-                f"```"
-            )
-        elif outcome == "bomb":
-            desc = (
-                f"```\n"
-                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
-                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
-                f"{'Lost:':<18} {format_amount(self.bet)} 💎\n"
-                f"```"
-            )
-        else:
-            desc = (
-                f"```\n"
-                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
-                f"{'Rows Cleared:':<18} {self.rows_cleared}/10\n"
-                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
-                f"{'Cash Out Now:':<18} {format_amount(payout)} 💎\n"
-                f"{'Next Row:':<18} {self.next_mult:.2f}×\n"
-                f"```"
-            )
-
-        embed = discord.Embed(color=color, title=title, description=f"{status}\n{desc}")
-        embed.set_author(name=f"{self.creator.display_name}  ·  Towers", icon_url=self.creator.display_avatar.url)
-        embed.set_footer(text=f"Easy Mode  ·  1 bomb per row")
-
-        if _PIL_AVAILABLE and outcome != "playing":
-            img_bytes = draw_towers_grid(self.tower, self.current_row, self.revealed)
-            if img_bytes:
-                embed._tw_img = img_bytes
+        grid        = render_tower(self.tower, self.current_row, self.revealed)
+        payout      = min(self.current_winnings, MAX_PAYOUT)
+        description = (
+            f"{grid}\n\n"
+            f"Bet: **{format_amount(self.bet)}** 💎\n"
+            f"Multiplier: **{self.current_mult:.2f}x**\n"
+            f"Potential Winnings: **{format_amount(payout)}** 💎\n"
+        )
+        embed = discord.Embed(color=color, title=title, description=description)
+        embed.set_footer(text=f"Row {self.current_row + 1} • Easy Mode")
         return embed
 
     async def _deduct_bet(self) -> bool:
@@ -6955,7 +6732,7 @@ class TowersView(BaseGameView):
                     await release_conn(conn)
 
                 try:
-                    await _tw_edit(interaction, self.game_embed("bomb"), view=None, orig_msg=self._original_message)
+                    await interaction.edit_original_response(embed=self.game_embed("bomb"), view=None)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7002,7 +6779,7 @@ class TowersView(BaseGameView):
                         await release_conn(conn)
 
                     try:
-                        await _tw_edit(interaction, self.game_embed("cleared"), view=None, orig_msg=self._original_message)
+                        await interaction.edit_original_response(embed=self.game_embed("cleared"), view=None)
                     except Exception as _result_err:
                         print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7015,7 +6792,7 @@ class TowersView(BaseGameView):
                     await send_log(log_e)
                 else:
                     self._update_buttons()
-                    await _tw_edit(interaction, self.game_embed("playing"), view=self)
+                    await interaction.edit_original_response(embed=self.game_embed("playing"), view=self)
 
     async def _cashout(self, interaction: discord.Interaction):
         async with self._lock:
@@ -7061,7 +6838,7 @@ class TowersView(BaseGameView):
                 await release_conn(conn)
 
             try:
-                await _tw_edit(interaction, self.game_embed("win"), view=None, orig_msg=self._original_message)
+                await interaction.edit_original_response(embed=self.game_embed("win"), view=None)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
 
@@ -7224,74 +7001,6 @@ _ROW_GAP= 14; _LABEL_H= 26;  _MAX_COLS = 6
 def _rr(draw, xy, r, fill, outline, w=3):
     draw.rounded_rectangle(xy, radius=r, fill=fill, outline=outline, width=w)
 
-def draw_rps_grid(history: list, max_rounds: int = 6) -> bytes:
-    """Draw the RPS card grid and return PNG bytes."""
-    if not _PIL_AVAILABLE:
-        return b""
-    cols = min(max(len(history), max_rounds), _MAX_COLS)
-    W = _PAD_X*2 + cols*_CARD_W + (cols-1)*_GAP
-    H = _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + _LABEL_H + _CARD_H + _PAD_Y
-
-    img  = Image.new("RGBA", (W, H), _RPS_BG)
-    draw = ImageDraw.Draw(img)
-    try:
-        fl = ImageFont.truetype(_RPS_FONT_BOLD, 13)
-        fb = ImageFont.truetype(_RPS_FONT_BOLD, 14)
-        fh = ImageFont.truetype(_RPS_FONT_HAND, 42)
-        fe = ImageFont.truetype(_RPS_FONT_BOLD, 11)
-    except Exception:
-        fl = fb = fh = fe = ImageFont.load_default()
-
-    draw.text((_PAD_X, _PAD_Y + 4), "👤  YOU", font=fl, fill=_RPS_MUTED)
-    draw.text((_PAD_X, _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + 4), "🤖  BOT", font=fl, fill=_RPS_MUTED)
-
-    for col in range(cols):
-        played = col < len(history)
-        h      = history[col] if played else {}
-        res    = h.get("result", "")
-        pm     = h.get("player", "")
-        bm     = h.get("bot", "")
-        mult   = h.get("mult", 1.0)
-        x      = _PAD_X + col * (_CARD_W + _GAP)
-
-        for is_p in [True, False]:
-            y    = _PAD_Y + _LABEL_H if is_p else _PAD_Y + _LABEL_H + _CARD_H + _BADGE_H + _ROW_GAP + _LABEL_H
-            move = pm if is_p else bm
-            if not played:
-                border, fill = _RPS_EMPTY_C, _RPS_CARD_EMPTY
-            elif res == "win":
-                border, fill = (_RPS_WIN_C if is_p else _RPS_LOSS_C), _RPS_CARD_BG
-            elif res == "loss":
-                border, fill = (_RPS_LOSS_C if is_p else _RPS_WIN_C), _RPS_CARD_BG
-            else:
-                border, fill = _RPS_TIE_C, _RPS_CARD_BG
-
-            _rr(draw, [x, y, x+_CARD_W, y+_CARD_H], _CARD_R, fill, border, 3)
-
-            if played and move:
-                sym = _RPS_HAND_SYM.get(move, "?")
-                try:
-                    bb = draw.textbbox((0,0), sym, font=fh)
-                    tw, th = bb[2]-bb[0], bb[3]-bb[1]
-                    draw.text((x+(_CARD_W-tw)//2-bb[0], y+(_CARD_H-th)//2-bb[1]), sym, font=fh, fill=_RPS_WHITE)
-                except Exception:
-                    draw.text((x+_CARD_W//2, y+_CARD_H//2), move[:1].upper(), font=fl, fill=_RPS_WHITE, anchor="mm")
-            elif not played:
-                draw.text((x+_CARD_W//2, y+_CARD_H//2), "SAB", font=fe, fill=_RPS_MUTED, anchor="mm")
-
-        bx0 = x+8; bx1 = x+_CARD_W-8
-        by0 = _PAD_Y+_LABEL_H+_CARD_H+3; by1 = by0+_BADGE_H-2
-        cx  = (bx0+bx1)//2; cy = (by0+by1)//2
-        bc  = (_RPS_WIN_C if res=="win" else _RPS_LOSS_C if res=="loss" else _RPS_TIE_C) if played else _RPS_EMPTY_C
-        _rr(draw, [bx0, by0, bx1, by1], 7, bc, bc, 0)
-        txt = f"{mult:.2f}x" if played else "—"
-        draw.text((cx, cy), txt, font=fb, fill=_RPS_DARK if played else _RPS_MUTED, anchor="mm")
-
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    buf.seek(0)
-    return buf.read()
-
 def rps_card_grid(history: list) -> str:
     """Fallback text grid used only if Pillow is unavailable."""
     if not history:
@@ -7303,329 +7012,6 @@ def rps_card_grid(history: list) -> str:
         lines.append(f"`R{i:02}` {RPS_EMOJI[p]} **vs** {RPS_EMOJI[b]}  \u00b7  {badge}  \u00b7  `{mult:.2f}x`")
     return "\n".join(lines)
 
-async def _rps_edit(interaction: discord.Interaction, embed: discord.Embed,
-                    view=None, orig_msg=None):
-    """Edit the RPS message.
-    Mid-game: update embed+view only (no image).
-    Result frame: update embed, then send image as separate downloadable attachment."""
-    img = getattr(embed, "_rps_img", None)
-    try:
-        if view is not None:
-            await interaction.edit_original_response(embed=embed, view=view)
-        else:
-            await interaction.edit_original_response(embed=embed, view=None)
-            if img:
-                f = discord.File(io.BytesIO(img), filename="rps_results.png")
-                await interaction.followup.send(file=f)
-    except Exception as e:
-        print(f"[RPS_EDIT ERROR] {e}")
-
-class RPSView(BaseGameView):
-    def __init__(self, creator: discord.User, bet: int):
-        super().__init__(timeout=180)
-        self.creator       = creator
-        self.bet           = bet
-        self.wins          = 0
-        self.total_rounds  = 0
-        self.history       = []
-        self.done          = False
-        self.bet_deducted  = False
-        self._lock         = asyncio.Lock()
-        self._original_message = None
-        try:
-            self._update_buttons()
-        except Exception:
-            pass
-
-    @property
-    def current_mult(self) -> float:
-        return rps_cumulative_mult(self.wins)
-
-    @property
-    def current_winnings(self) -> int:
-        return int(self.bet * self.current_mult)
-
-    def _update_buttons(self):
-        self.rock_btn.disabled     = self.done
-        self.paper_btn.disabled    = self.done
-        self.scissors_btn.disabled = self.done
-        self.cashout_btn.disabled  = self.done or self.wins == 0
-
-    def game_embed(self, outcome: str = "playing") -> discord.Embed:
-        payout  = min(self.current_winnings, MAX_PAYOUT)
-        profit  = payout - self.bet
-        profit_str = (f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}")
-
-        if outcome == "playing":
-            color = C_BLUE
-            header = "✊  ROCK · PAPER · SCISSORS"
-            status_icon = "🎮"
-        elif outcome == "win":
-            color = C_WIN
-            header = "🏆  CASHED OUT"
-            status_icon = "💰"
-        elif outcome == "loss":
-            color = C_LOSS
-            header = "💥  WIPED OUT"
-            status_icon = "❌"
-        else:  # tie
-            color = C_PUSH
-            header = "🤝  TIE — FREE ROUND"
-            status_icon = "↩️"
-
-        last_round = ""
-        if self.history:
-            h = self.history[-1]
-            p_e = RPS_EMOJI[h["player"]]
-            b_e = RPS_EMOJI[h["bot"]]
-            last_round = (
-                f"\n"
-                f"**Last Round**\n"
-                f"┌──────────────────────┐\n"
-                f"│  👤 You:  {p_e} {RPS_LABEL[h['player']]:<10}  │\n"
-                f"│  🤖 Bot:  {b_e} {RPS_LABEL[h['bot']]:<10}  │\n"
-                f"└──────────────────────┘"
-            )
-
-        streak_bar = ("🟩" * min(self.wins, 8)) + ("⬛" * max(0, 8 - self.wins))
-        next_mult  = rps_cumulative_mult(self.wins + 1)
-
-        if outcome in ("win", "loss"):
-            stats = (
-                f"**{status_icon} Result**\n"
-                f"```\n"
-                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
-                f"{'Streak:':<18} {self.wins} win{'s' if self.wins != 1 else ''}\n"
-                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
-                f"{'Payout:':<18} {format_amount(payout)} 💎\n"
-                f"{'Profit:':<18} {profit_str} 💎\n"
-                f"```"
-            )
-        else:
-            stats = (
-                f"**{status_icon} Live Game**\n"
-                f"```\n"
-                f"{'Bet:':<18} {format_amount(self.bet)} 💎\n"
-                f"{'Streak:':<18} {self.wins} win{'s' if self.wins != 1 else ''}\n"
-                f"{'Multiplier:':<18} {self.current_mult:.2f}×\n"
-                f"{'Cash Out Now:':<18} {format_amount(payout)} 💎\n"
-                f"{'Next Win:':<18} {next_mult:.2f}×\n"
-                f"```"
-            )
-
-        streak_display = f"**Win Streak** `{self.wins}`\n{streak_bar}\n"
-
-        description = stats + last_round + "\n\n" + streak_display
-
-        seed  = f"{self.creator.id}-{len(self.history)}-{time.time_ns()}"
-        hsh   = hashlib.sha256(seed.encode()).hexdigest()
-        embed = discord.Embed(title=header, description=description, color=color)
-        embed.set_author(name=f"{self.creator.display_name}  ·  RPS", icon_url=self.creator.display_avatar.url)
-        embed.set_footer(text=f"🔒 {hsh[:24]}...  ·  Round {self.total_rounds}")
-
-        if _PIL_AVAILABLE and self.history and outcome in ("win", "loss"):
-            img_bytes = draw_rps_grid(self.history, max_rounds=6)
-            if img_bytes:
-                embed._rps_img = img_bytes
-        return embed
-
-    async def _deduct_bet(self) -> bool:
-        if self.bet_deducted:
-            return True
-        self.bet_deducted = True
-        async with get_user_lock(self.creator.id):
-            conn = await get_conn()
-            try:
-                return await deduct_balance_safe(conn, self.creator.id, self.bet)
-            finally:
-                await release_conn(conn)
-
-    async def _play(self, interaction: discord.Interaction, player_move: str):
-        async with self._lock:
-            if self.done:
-                await interaction.response.send_message("❌ Game already over.", ephemeral=True)
-                return
-
-        await interaction.response.defer()
-
-        async with self._lock:
-            if not await self._deduct_bet():
-                await interaction.followup.send("❌ Insufficient balance. Game cancelled.", ephemeral=True)
-                self.done = True
-                self.stop()
-                return
-
-            _rps_forced = _force_result.pop(self.creator.id, None)
-            if _rps_forced == "win":
-                bot_should_win = False
-            elif _rps_forced == "lose":
-                bot_should_win = True
-            else:
-                bot_should_win = random.random() < get_dynamic_house_win(self.creator.id)
-            non_tie_moves  = [m for m in RPS_MOVES if m != player_move]
-            bot_winning_move = [m for m in RPS_MOVES if RPS_BEATS.get(m) == player_move][0]
-            bot_losing_move  = RPS_BEATS[player_move]
-
-            if random.random() < 0.10:
-                bot_move = player_move
-                result   = "tie"
-            elif bot_should_win:
-                bot_move = bot_winning_move
-                result   = "loss"
-            else:
-                bot_move = bot_losing_move
-                result   = "win"
-
-            self.total_rounds += 1
-
-            if result == "win":
-                self.wins += 1
-                self.history.append({"player": player_move, "bot": bot_move,
-                                     "result": "win", "mult": self.current_mult})
-                self._update_buttons()
-                await _rps_edit(interaction, self.game_embed("playing"), view=self)
-
-            elif result == "tie":
-                self.history.append({"player": player_move, "bot": bot_move,
-                                     "result": "tie", "mult": self.current_mult})
-                self._update_buttons()
-                await _rps_edit(interaction, self.game_embed("tie"), view=self)
-
-            else:
-                self.history.append({"player": player_move, "bot": bot_move,
-                                     "result": "loss", "mult": self.current_mult})
-                self.done = True
-                self.stop()
-                self._update_buttons()
-
-                conn = await get_conn()
-                try:
-                    await record_game(conn, self.creator.id, False, self.bet, 0, "rps")
-                    await log_transaction(conn, self.creator.id, "rps_loss", -self.bet)
-                    _rank_guild = interaction.guild or bot.get_guild(GUILD_ID)
-                    if _rank_guild:
-                        row = await get_user(conn, self.creator.id)
-                        member = _rank_guild.get_member(self.creator.id)
-                        if row and member:
-                            await update_user_rank(member, row["wagered"])
-                finally:
-                    await release_conn(conn)
-
-                try:
-                    await _rps_edit(interaction, self.game_embed("loss"), view=None, orig_msg=self._original_message)
-                except Exception as _result_err:
-                    print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
-
-                log_e = discord.Embed(title="✊ RPS Result", color=C_LOSS)
-                log_e.add_field(name="Player",  value=self.creator.mention,    inline=True)
-                log_e.add_field(name="Bet",     value=format_amount(self.bet), inline=True)
-                log_e.add_field(name="Rounds",  value=str(self.total_rounds),  inline=True)
-                log_e.add_field(name="Outcome", value="💀 LOSS",               inline=True)
-                log_e.set_footer(text=now_ts())
-                await send_log(log_e)
-
-    async def _cashout(self, interaction: discord.Interaction):
-        async with self._lock:
-            if self.done:
-                await interaction.response.send_message("❌ Game already over.", ephemeral=True)
-                return
-            if self.wins == 0:
-                await interaction.response.send_message(
-                    "❌ Win at least one round before cashing out.", ephemeral=True)
-                return
-            self.done = True
-            self.stop()
-            self._update_buttons()
-            payout = min(self.current_winnings, MAX_PAYOUT)
-            net    = payout - self.bet
-
-        await interaction.response.defer()
-
-        conn = await get_conn()
-        try:
-            payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "rps")
-            await record_game(conn, self.creator.id, True, self.bet, payout)
-            await log_transaction(conn, self.creator.id, "rps_cashout", net)
-            if interaction.guild:
-                row = await get_user(conn, self.creator.id)
-                member = interaction.guild.get_member(self.creator.id)
-                if row and member:
-                    await update_user_rank(member, row["wagered"])
-                asyncio.create_task(check_vip_balance(
-                    interaction.user.id if hasattr(interaction, 'user') else self.creator.id,
-                    interaction.guild if hasattr(interaction, 'guild') else None))
-        finally:
-            await release_conn(conn)
-
-        try:
-            await _rps_edit(interaction, self.game_embed("win"), view=None, orig_msg=self._original_message)
-        except Exception as _result_err:
-            print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
-
-        log_e = discord.Embed(title="✊ RPS Result", color=C_WIN)
-        log_e.add_field(name="Player",     value=self.creator.mention,        inline=True)
-        log_e.add_field(name="Bet",        value=format_amount(self.bet),     inline=True)
-        log_e.add_field(name="Multiplier", value=f"{self.current_mult:.2f}x", inline=True)
-        log_e.add_field(name="Payout",     value=format_amount(payout),       inline=True)
-        log_e.add_field(name="Rounds Won", value=str(self.wins),              inline=True)
-        log_e.add_field(name="Outcome",    value="✅ CASHOUT",                inline=True)
-        log_e.set_footer(text=now_ts())
-        await send_log(log_e)
-
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        if not self.done:
-            conn = await get_conn()
-            try:
-                if self.wins > 0:
-                    payout = min(self.current_winnings, MAX_PAYOUT)
-                    payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "rps")
-                    await record_game(conn, self.creator.id, True, self.bet, payout)
-                    await log_transaction(conn, self.creator.id, "rps_timeout_cashout", payout - self.bet)
-                    desc = f"Game timed out — auto cashed out **{format_amount(payout)} 💎** ({self.wins} wins)."
-                else:
-                    await update_balance(conn, self.creator.id, self.bet)
-                    desc = f"Game timed out — bet of **{format_amount(self.bet)}** refunded."
-            finally:
-                await release_conn(conn)
-            try:
-                await self._original_message.edit(
-                    embed=discord.Embed(color=C_DARK, description=f"## ✊  RPS — EXPIRED\n> {desc}"),
-                    view=None)
-            except Exception as e:
-                print(f"[ERROR] {type(e).__name__}: {e}")
-        await super().on_timeout()
-
-    @discord.ui.button(label="Rock", style=discord.ButtonStyle.blurple, emoji="✊", row=0)
-    async def rock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.creator.id:
-            await interaction.response.send_message("❌ Not your game.", ephemeral=True)
-            return
-        await self._play(interaction, "rock")
-
-    @discord.ui.button(label="Paper", style=discord.ButtonStyle.blurple, emoji="✋", row=0)
-    async def paper_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.creator.id:
-            await interaction.response.send_message("❌ Not your game.", ephemeral=True)
-            return
-        await self._play(interaction, "paper")
-
-    @discord.ui.button(label="Scissors", style=discord.ButtonStyle.blurple, emoji="✌️", row=0)
-    async def scissors_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.creator.id:
-            await interaction.response.send_message("❌ Not your game.", ephemeral=True)
-            return
-        await self._play(interaction, "scissors")
-
-    @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.green, emoji="💸", row=1)
-    async def cashout_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.creator.id:
-            await interaction.response.send_message("❌ Not your game.", ephemeral=True)
-            return
-        await self._cashout(interaction)
-@bot.tree.command(name="rps", description="Play Rock Paper Scissors — chain wins to multiply your bet!")
-@app_commands.describe(bet="Bet amount e.g. 5k, 1M")
 async def cmd_rps(interaction: discord.Interaction, bet: str):
     wait = check_cooldown("rps", interaction.user.id)
     if wait > 0:
@@ -7725,33 +7111,44 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
 
 def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
     """
-    Fully rig the board after each safe click.
-    Bombs are redistributed with HIGH weight toward:
-      1. Tiles adjacent (distance 1) to last_clicked  — weight 12
-      2. Tiles 2 steps away                           — weight 6
-      3. Center region                                — +3 bonus
-      4. Already-revealed tiles                       — weight 0 (excluded)
-    This makes the next click extremely dangerous without touching multipliers.
+    Fully rigged board — after every safe click, bombs cluster toward
+    the tiles MOST LIKELY to be clicked next (adjacent + natural click paths).
+    Uses weighted sampling without replacement for correct mine count.
     """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
     if len(unrevealed) <= mines:
-        return grid  # can't rig — too few unrevealed tiles
+        return grid
 
     r_c, c_c = divmod(last_clicked, 5)
 
     def weight(idx):
         r, c = divmod(idx, 5)
-        dist = abs(r - r_c) + abs(c - c_c)
-        base = _MINES_DANGER_WEIGHTS[idx]
-        if dist == 0:   return 0   # the tile just clicked (already revealed)
-        if dist == 1:   return base + 12
-        if dist == 2:   return base + 6
-        return max(base - 2, 1)
+        dist  = abs(r - r_c) + abs(c - c_c)
+        base  = _MINES_DANGER_WEIGHTS[idx]
+        if dist == 0:  return 0    # already revealed — never place bomb here
+        if dist == 1:  return base + 20   # immediately adjacent — very dangerous
+        if dist == 2:  return base + 10   # two hops away
+        if dist == 3:  return base + 3
+        return max(base - 3, 1)
 
     weights = [weight(i) for i in unrevealed]
-    new_bombs = random.choices(unrevealed, weights=weights, k=mines)
+    total   = sum(weights)
+    # Weighted sampling WITHOUT replacement
+    chosen  = []
+    pool    = list(zip(unrevealed, weights))
+    for _ in range(min(mines, len(pool))):
+        if not pool: break
+        t = random.uniform(0, sum(w for _, w in pool))
+        cum = 0
+        for j, (tile, w) in enumerate(pool):
+            cum += w
+            if cum >= t:
+                chosen.append(tile)
+                pool.pop(j)
+                break
+
     new_grid = ["gem"] * MINES_GRID_SIZE
-    for b in new_bombs:
+    for b in chosen:
         new_grid[b] = "bomb"
     for r in revealed:
         new_grid[r] = "gem"
@@ -7915,7 +7312,7 @@ class MinesView(BaseGameView):
                 finally:
                     await release_conn(conn)
                 try:
-                    await _rps_edit(interaction, self.game_embed("loss"), view=None, orig_msg=self._original_message)
+                    await interaction.edit_original_response(embed=self.game_embed("loss"), view=None)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
                 log_e = discord.Embed(title="💣 Mines Result", color=C_LOSS)
@@ -8059,7 +7456,6 @@ class MinesView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
-
 @bot.tree.command(name="mines", description="Play Mines — find gems and avoid bombs!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M", mines="Number of mines (1-24)")
 async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
@@ -9372,7 +8768,7 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
-BOT_HOUSE_WIN_CD = 0.4615  # applied only on wins to achieve 6% edge
+BOT_HOUSE_WIN_CD = 0.52    # 52/48 edge matching all other games
 
 CD_COLORS = [
     ("🔴", "Red"),
