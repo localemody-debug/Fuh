@@ -1331,9 +1331,12 @@ async def on_ready():
             finally:
                 await release_conn(conn)
 
-            if current_hash == last_hash:
+            force_sync = os.getenv("FORCE_SYNC", "").lower() in ("1", "true", "yes")
+            if current_hash == last_hash and not force_sync:
                 print(f"[BOT] ⏭️  Commands unchanged (hash match) — skipping sync")
                 return
+            if force_sync:
+                print(f"[BOT] 🔁 FORCE_SYNC enabled — bypassing hash check")
 
             if GUILD_ID:
                 guild_obj = discord.Object(id=int(GUILD_ID))
