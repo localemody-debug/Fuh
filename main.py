@@ -1590,10 +1590,7 @@ async def _setup_guild_channels(guild: discord.Guild):
             ("🎲｜room-2",           "Gambling room 2.",          gambling_ow(), False),
             ("🤡｜hall-of-flip",    "Hall of flip.",            staff_only_ow(admin_role, mod_role, tmod_role),     False),
         ]),
-        ("⚔️ SABPvp", staff_full(owner_role, manager_role), [
-            ("🔷｜coinflip",    "PvP coinflip duels.",    staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("🤖｜create-game", "Create a PvP game.",     gambling_ow(), False),
-        ]),
+
         ("🔊 Voice Channels", staff_full(owner_role, manager_role), [
             ("General", None, chat_ow(), True),
         ]),
@@ -11975,7 +11972,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 VIP_MIN_BALANCE   = 70_000_000   # 70M gems required to create/keep a VIP room
 VIP_WARN_MINUTES  = 5               # minutes before deletion after warning
-VIP_CATEGORY_NAME = "👑 VIP"        # Same category as the VIP lounge — rooms created here too
+VIP_CATEGORY_NAME = "👑 VIP GAMBLING"  # Same category as the VIP lounge — rooms created here too
 
 _vip_warn_tasks: dict[int, asyncio.Task] = {}
 
