@@ -12114,7 +12114,7 @@ async def cmd_createviproom(interaction: discord.Interaction):
             category = await interaction.guild.create_category(
                 VIP_CATEGORY_NAME,
                 overwrites={
-                    interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False)
+                    interaction.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False)
                 }
             )
         except discord.Forbidden:
@@ -12122,7 +12122,7 @@ async def cmd_createviproom(interaction: discord.Interaction):
             return
 
     overwrites = {
-        interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        interaction.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
         interaction.user:               discord.PermissionOverwrite(read_messages=True, send_messages=True),
         interaction.guild.me:           discord.PermissionOverwrite(
             read_messages=True, send_messages=True, manage_channels=True, manage_permissions=True),
@@ -12146,9 +12146,9 @@ async def cmd_createviproom(interaction: discord.Interaction):
         title="VIP Room Created",
         description=(
             f"Welcome to your private VIP room, {interaction.user.mention}!\n\n"
-            f"**This room is for you only** \U0001f512\n\n"
+            f"**Everyone can see this room, but only you (and members you add) can talk** 👑\n\n"
             f"**Rules:**\n"
-            f"\u2022 Only you can see and use this room\n"
+            f"\u2022 Use `/addviproom` to let others chat here\n"
             f"\u2022 Keep your balance above **{format_amount(VIP_MIN_BALANCE)}** \U0001f48e\n"
             f"\u2022 Balance drops below threshold \u2192 **{VIP_WARN_MINUTES} min warning** \u2192 auto delete\n"
             f"\u2022 Use `/deleteviproom` to remove it yourself"
@@ -12253,7 +12253,7 @@ async def cmd_removeviproom(interaction: discord.Interaction, user: discord.Memb
         return
 
     try:
-        await channel.set_permissions(user, overwrite=None)  # Remove all custom perms
+        await channel.set_permissions(user, read_messages=True, send_messages=False, reason="Removed from VIP room by owner")
     except discord.Forbidden:
         await interaction.response.send_message("❌ Bot lacks permission to edit channel.", ephemeral=True)
         return
