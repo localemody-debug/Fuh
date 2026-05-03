@@ -143,7 +143,7 @@ def record_streak(user_id: int, won: bool, current_balance: int = 0):
     pass  # No-op — pity system removed
 
 def check_cooldown(command: str, user_id: int) -> float:
-    """Returns 0 if allowed, seconds remaining if on cooldown."""
+    """Returns 0 if allowed, seconds remaining if on cooldown. Does NOT stamp — call stamp_cooldown after bet is confirmed."""
     now = time.monotonic()
     if command not in _cooldowns:
         _cooldowns[command] = {}
@@ -151,8 +151,13 @@ def check_cooldown(command: str, user_id: int) -> float:
     remaining = GAME_COOLDOWN_SECONDS - (now - last)
     if remaining > 0:
         return remaining
-    _cooldowns[command][user_id] = now
     return 0
+
+def stamp_cooldown(command: str, user_id: int) -> None:
+    """Stamp the cooldown for a command after a successful bet deduction."""
+    if command not in _cooldowns:
+        _cooldowns[command] = {}
+    _cooldowns[command][user_id] = time.monotonic()
 
 MAX_BET    = 750_000_000   # 750M gems
 MAX_PAYOUT = 1_650_000_000 # 1.65B gems
@@ -1805,20 +1810,25 @@ async def on_member_join(member: discord.Member):
     if inviter_id:
         conn = await get_conn()
         try:
-            already = await conn.fetchrow(
-                "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(member.id))
-            pending = await conn.fetchrow(
-                "SELECT member_id FROM pending_verifications WHERE member_id=$1", str(member.id))
-            if not already and not pending:
-                await conn.execute(
-                    """
-                    INSERT INTO pending_verifications (member_id, guild_id, inviter_id, joined_at)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (member_id) DO UPDATE SET inviter_id=$3, joined_at=$4
-                    """,
-                    str(member.id), str(guild.id), inviter_id, now_ts()
-                )
-                print(f"[INVITE] Stored pending invite: {member.name} invited by {inviter_id} — awaiting Member role")
+            async with conn.transaction():
+                # Atomic check-and-insert: only inserts if neither table has a record
+                # for this member, preventing race conditions on rapid rejoins
+                already = await conn.fetchrow(
+                    "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(member.id))
+                if already:
+                    print(f"[INVITE] {member.name} already rewarded, skipping")
+                else:
+                    result = await conn.execute(
+                        """
+                        INSERT INTO pending_verifications (member_id, guild_id, inviter_id, joined_at)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (member_id) DO UPDATE
+                            SET inviter_id=$3, joined_at=$4
+                            WHERE pending_verifications.inviter_id IS DISTINCT FROM $3
+                        """,
+                        str(member.id), str(guild.id), inviter_id, now_ts()
+                    )
+                    print(f"[INVITE] Stored pending invite: {member.name} invited by {inviter_id} — awaiting Member role")
         except Exception as e:
             print(f"[INVITE] Could not store pending invite: {e}")
         finally:
@@ -1961,9 +1971,12 @@ async def send_log(embed: discord.Embed):
         print(f"[GAME LOG] Missing send permission in #{ch.name}")
     except Exception as e:
         print(f"[GAME LOG] Failed to send: {e}")
+    await _maybe_vouch_game_win(embed)
 
 async def send_finance_log(embed: discord.Embed):
     """Send to the deposits/withdrawals/gem changes log channel."""
+    if not FINANCE_LOG_ID:
+        return
     ch = bot.get_channel(FINANCE_LOG_ID)
     if ch is None:
         try:
@@ -1977,6 +1990,7 @@ async def send_finance_log(embed: discord.Embed):
         print(f"[FINANCE LOG] Missing send permission in #{ch.name}")
     except Exception as e:
         print(f"[FINANCE LOG] Failed to send: {e}")
+    await _maybe_vouch_finance(embed)
 
 async def send_tip_log(embed: discord.Embed):
     """Send to BOTH admin tip-log AND the public tipping channel in Extra."""
@@ -2019,6 +2033,91 @@ async def send_vouches_log(embed: discord.Embed):
         await ch.send(embed=embed)
     except Exception as e:
         print(f"[VOUCHES] Failed to send: {e}")
+
+VOUCH_THRESHOLD = 250_000_000  # 250M gems
+
+# Keywords that identify house-game log embeds (PvP titles excluded)
+_HOUSE_GAME_KEYWORDS = {
+    "ROULETTE", "BACCARAT", "BLACKJACK", "HILO", "TOWERS",
+    "MINES", "SCRATCH", "HORSE RACE", "COLOR DICE", "UPGRADER",
+    "SLOTS", "PROGRESSIVE COINFLIP", "BALLOON",
+}
+_SLOTS_TITLE_PREFIX = "🎰 Slots"
+
+def _is_house_game_embed(title: str) -> bool:
+    """Returns True if the embed title looks like a house game result (not PvP)."""
+    t = title.upper()
+    # Exclude PvP games
+    if "PVP" in t or "VS" in t or "DUEL" in t or "WAR" in t:
+        return False
+    return any(kw in t for kw in _HOUSE_GAME_KEYWORDS)
+
+# Finance log titles that should trigger vouch for big deposits/withdrawals
+
+def _parse_gem_amount(text: str) -> int:
+    """Parse a formatted gem amount string like '250M', '1.2B', '500,000' into int."""
+    if not text:
+        return 0
+    t = text.strip().replace(",", "").replace("💎", "").strip()
+    try:
+        if t.upper().endswith("B"):
+            return int(float(t[:-1]) * 1_000_000_000)
+        if t.upper().endswith("M"):
+            return int(float(t[:-1]) * 1_000_000)
+        if t.upper().endswith("K"):
+            return int(float(t[:-1]) * 1_000)
+        return int(float(t))
+    except Exception:
+        return 0
+
+async def _maybe_vouch_game_win(embed: discord.Embed):
+    """Fire a vouch log if this is a house-game win embed with payout >= VOUCH_THRESHOLD."""
+    title = embed.title or ""
+    if not _is_house_game_embed(title):
+        return
+    payout = 0
+    player = None
+    for f in embed.fields:
+        fname = f.name.lower()
+        if any(k in fname for k in ("payout", "total payout", "winnings", "profit")):
+            payout = _parse_gem_amount(f.value)
+        if any(k in fname for k in ("player", "creator", "user", "winner")):
+            if player is None:
+                player = f.value
+    if payout >= VOUCH_THRESHOLD:
+        v = discord.Embed(
+            title="🏆  Big Win!",
+            description=f"{player or 'Someone'} just won **{payout:,}** 💎\n*{title}*",
+            color=0xFFD700
+        )
+        _brand_embed(v)
+        await send_vouches_log(v)
+
+async def _maybe_vouch_finance(embed: discord.Embed):
+    """Fire a vouch log for big deposits or withdrawals."""
+    desc = (embed.description or "").upper()
+    is_deposit    = "DEPOSIT" in desc and "TICKET" in desc
+    is_withdrawal = "WITHDRAWAL" in desc and ("DELIVERED" in desc or "APPROVED" in desc)
+    if not is_deposit and not is_withdrawal:
+        return
+    amount = 0
+    user = None
+    for f in embed.fields:
+        fname = f.name.lower()
+        if any(k in fname for k in ("amount", "cost", "total", "gems")):
+            amount = _parse_gem_amount(f.value)
+        if any(k in fname for k in ("user", "player", "member")):
+            if user is None:
+                user = f.value
+    if amount >= VOUCH_THRESHOLD:
+        action = "deposited" if "DEPOSIT" in desc else "withdrew"
+        v = discord.Embed(
+            title="💸  Big Transaction!",
+            description=f"{user or 'Someone'} just {action} **{amount:,}** 💎",
+            color=0xA855F7
+        )
+        _brand_embed(v)
+        await send_vouches_log(v)
 
 def admin_only():
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -3975,6 +4074,7 @@ async def cmd_progressivecoinflip(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("progressivecoinflip", interaction.user.id)
 
     pf   = pf_new_game()
     pf["game_name"] = "Progressive Coinflip"
@@ -4415,6 +4515,7 @@ async def cmd_dice(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("dice", interaction.user.id)
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message(
@@ -4501,6 +4602,7 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("coinflip", interaction.user.id)
 
     pf    = pf_new_game()
     pf["game_name"] = "Coinflip"
@@ -4733,6 +4835,7 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("roulette", interaction.user.id)
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
@@ -5102,6 +5205,7 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("baccarat", interaction.user.id)
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
@@ -5338,7 +5442,6 @@ class BlackjackView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
-        await super().on_timeout()
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.blurple, emoji="🃏")
     async def hit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
@@ -5456,6 +5559,7 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("blackjack", interaction.user.id)
 
     deck = build_deck()
     ph   = [deck.pop(), deck.pop()]
@@ -5809,6 +5913,7 @@ async def cmd_blackjackdice(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("blackjackdice", interaction.user.id)
 
     player_dice = [bjd_roll(), bjd_roll()]
     dealer_dice = [bjd_roll(), bjd_roll()]
@@ -6121,6 +6226,7 @@ async def cmd_war(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("war", interaction.user.id)
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
@@ -6551,6 +6657,7 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("hilo", interaction.user.id)
 
     first_card = hilo_card()
     if not _start_game_session(interaction.user.id):
@@ -6950,6 +7057,7 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("towers", interaction.user.id)
 
     tower = generate_tower()
     if not _start_game_session(interaction.user.id):
@@ -7045,6 +7153,7 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("rps", interaction.user.id)
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
@@ -7493,6 +7602,7 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("mines", interaction.user.id)
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
@@ -7822,7 +7932,6 @@ class ScratchView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
-        await super().on_timeout()
 
 @bot.tree.command(name="scratch", description="Scratch and match 3 symbols to win big!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M")
@@ -7860,6 +7969,7 @@ async def cmd_scratch(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("scratch", interaction.user.id)
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
@@ -7874,6 +7984,13 @@ HORSE_ICONS  = ["🐎", "🐎", "🐎", "🐎"]
 TRACK_LENGTH = 12  # positions to finish line
 TICK_DELAY   = 0.9  # seconds between animation ticks
 HORSE_PAYOUT = 3.76  # 4 horses equal odds, 6% edge: fair=4x, house cut=3.76x
+
+HORSE_WIN_GIFS = [
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500119779204399114/horserace_thunder_wins-1.gif?ex=69f746ea&is=69f5f56a&hm=65d564c070866500bbcd00ff641ecdb47de635b9abf00db7939fbaf632e92085&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500119898691731587/horserace_blaze_wins-1.gif?ex=69f74706&is=69f5f586&hm=83f744aff14f097d4479820fe571ab7ebea885a2686b322856d97ce5f168534d&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500120613652660255/horserace_shadow_wins-4.gif?ex=69f747b1&is=69f5f631&hm=21acb54bb5b0a409a910f3e7ab1597c294cfceb698764faa011f89660d19602b&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500120300367642804/horserace_storm_wins-1.gif?ex=69f74766&is=69f5f5e6&hm=432130e697381a0e8be1018a3a8329f9acef3afe18370a64a6ea96a0de9bad2f&",
+]
 
 def hr_render(positions: list, finished: list = None) -> str:
     """Render the race track as a string."""
@@ -7897,8 +8014,7 @@ def hr_render(positions: list, finished: list = None) -> str:
             medal = f" #{rank}" if i in finished else ""
         lines.append(f"{emoji}`{name:<7}` {track_str}{medal}")
     lines.append(f"{'─'*28}🏁")
-    return "\
-".join(lines)
+    return "\n".join(lines)
 
 def hr_race_embed(positions: list, bet: int, chosen: int,
                   finished: list = None, done: bool = False,
@@ -8007,117 +8123,151 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("horserace", interaction.user.id)
 
     chosen = horse - 1  # 0-indexed
 
     _hr_forced = _force_result.pop(interaction.user.id, None)
-    if _hr_forced == "win":    winner_idx = chosen  # force player's horse to win
-    elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4  # force a different horse
+    if _hr_forced == "win":    winner_idx = chosen
+    elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:                       winner_idx = random.randint(0, 3)
-
-    positions = [0, 0, 0, 0]
-    finished  = []  # order of finish
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
-    await interaction.response.send_message(
-        embed=hr_race_embed(positions, amt, chosen))
-    msg = await interaction.original_response()
 
-    max_ticks = 40
-    for tick in range(max_ticks):
-        for i in range(4):
-            if i in finished:
-                continue
+    try:
+        chosen_emoji = HORSE_EMOJIS[chosen]
+        chosen_name  = HORSE_NAMES[chosen]
+        payout_if_win = min(int(amt * HORSE_PAYOUT), MAX_PAYOUT)
 
-            remaining = len([x for x in range(4) if x not in finished])
-            ticks_left = max_ticks - tick
+        # ── Step 1: "Horses are running" embed with the winner's gif ──────────────
+        racing_embed = discord.Embed(
+            color=C_GOLD,
+            description=(
+                f"## 🏇  HORSE RACE — RACING!\n"
+                f"┌─────────────────────────┐\n"
+                f"│ 🐎 **Your Horse** • {chosen_emoji} {chosen_name}\n"
+                f"│ 💰 **Bet** • {format_amount(amt)} 💎\n"
+                f"│ 🎯 **Payout if Win** • {format_amount(payout_if_win)} 💎\n"
+                f"│ ⏳ **The horses are running...**\n"
+                f"└─────────────────────────┘"
+            )
+        )
+        racing_gif = HORSE_WIN_GIFS[winner_idx]
+        racing_embed.set_image(url=racing_gif)
+        _brand_embed(racing_embed)
 
-            if i == winner_idx and ticks_left < 8 and i not in finished:
-                step = random.choices([1, 2], weights=[1, 3])[0]
-            elif i != winner_idx and positions[winner_idx] > TRACK_LENGTH - 3:
-                step = random.choices([0, 1], weights=[2, 1])[0]
+        await interaction.response.send_message(embed=racing_embed)
+        msg = await interaction.original_response()
+        await asyncio.sleep(4.5)
+
+        # ── Step 2: Determine finish order ────────────────────────────────────────
+        positions = [0, 0, 0, 0]
+        finished  = []
+        max_ticks = 40
+        rng = random.Random()
+        for tick in range(max_ticks):
+            for i in range(4):
+                if i in finished:
+                    continue
+                ticks_left = max_ticks - tick
+                if i == winner_idx and ticks_left < 8:
+                    step = rng.choices([1, 2], weights=[1, 3])[0]
+                elif i != winner_idx and positions[winner_idx] > TRACK_LENGTH - 3:
+                    step = rng.choices([0, 1], weights=[2, 1])[0]
+                else:
+                    step = rng.choices([0, 1, 2], weights=[2, 5, 3])[0]
+                positions[i] = min(positions[i] + step, TRACK_LENGTH)
+                if positions[i] >= TRACK_LENGTH and i not in finished:
+                    finished.append(i)
+            if len(finished) == 4 or (finished and tick > 5):
+                break
+
+        if not finished:
+            finished = list(range(4))
+            random.shuffle(finished)
+        if winner_idx in finished:
+            finished.remove(winner_idx)
+        finished.insert(0, winner_idx)
+
+        won    = finished[0] == chosen
+        payout = min(int(amt * HORSE_PAYOUT), MAX_PAYOUT) if won else 0
+
+        # ── Step 3: Show result embed ──────────────────────────────────────────────
+        try:
+            winner_name  = HORSE_NAMES[finished[0]]
+            winner_emoji = HORSE_EMOJIS[finished[0]]
+            if won:
+                net          = payout - amt
+                result_color = C_WIN
+                outcome_line = f"│ ✅ **You Win** • +{format_amount(net)} 💎"
+                title_line   = f"## 🏇  HORSE RACE — {winner_emoji} {winner_name.upper()} WINS 🏆"
             else:
-                step = random.choices([0, 1, 2], weights=[2, 5, 3])[0]
+                result_color = C_LOSS
+                outcome_line = f"│ ❌ **You Lose** • -{format_amount(amt)} 💎"
+                title_line   = f"## 🏇  HORSE RACE — {winner_emoji} {winner_name.upper()} WINS"
 
-            positions[i] = min(positions[i] + step, TRACK_LENGTH)
+            result_embed = discord.Embed(
+                color=result_color,
+                description=(
+                    f"{title_line}\n"
+                    f"┌─────────────────────────┐\n"
+                    f"│ 🐎 **Your Horse** • {chosen_emoji} {chosen_name}\n"
+                    f"│ 💰 **Bet** • {format_amount(amt)} 💎\n"
+                    f"│ 📊 **Multiplier** • {HORSE_PAYOUT}x\n"
+                    f"{outcome_line}\n"
+                    f"└─────────────────────────┘"
+                )
+            )
+            _brand_embed(result_embed)
+            await msg.edit(embed=result_embed)
+        except Exception as _err:
+            print(f"[HORSERACE RESULT] Failed to edit: {_err}")
 
-            if positions[i] >= TRACK_LENGTH and i not in finished:
-                finished.append(i)
-
-        done = len(finished) == 4 or (finished and tick > 5)
-
+        # ── Step 4: DB update ──────────────────────────────────────────────────────
+        conn = await get_conn()
         try:
-            await msg.edit(embed=hr_race_embed(
-                positions, amt, chosen,
-                finished=finished if done else None,
-                done=done,
-                won=(finished[0] == chosen) if finished else False
-            ))
+            if payout > 0:
+                payout = await apply_win_payout(conn, interaction.user.id, payout, amt, "horserace")
+            await record_game(conn, interaction.user.id, won, amt, payout, "horserace")
+            await log_transaction(conn, interaction.user.id, "horserace", payout - amt)
+            if interaction.guild:
+                row = await get_user(conn, interaction.user.id)
+                member = interaction.guild.get_member(interaction.user.id)
+                if row and member:
+                    await update_user_rank(member, row["wagered"])
         except Exception as e:
+            print(f"[HORSERACE] DB error, refunding bet: {e}")
+            try:
+                await update_balance(conn, interaction.user.id, amt)
+            except Exception as _re:
+                print(f"[HORSERACE] Refund also failed: {_re}")
+        finally:
+            await release_conn(conn)
 
-            print(f"[ERROR] {type(e).__name__}: {e}")
-            pass
-
-        if done:
-            break
-
-        await asyncio.sleep(TICK_DELAY)
-
-    if not finished:
-        finished = list(range(4))
-        random.shuffle(finished)
-    if winner_idx in finished:
-        finished.remove(winner_idx)
-    finished.insert(0, winner_idx)
-
-    won = finished[0] == chosen
-    payout = min(int(amt * HORSE_PAYOUT), MAX_PAYOUT) if won else 0
-
-    try:
-        await msg.edit(embed=hr_race_embed(
-            positions, amt, chosen,
-            finished=finished, done=True, won=won))
-    except Exception as _err:
-        print(f"[ERROR] Failed to send error message: {_err}")
-        pass
-
-    conn = await get_conn()
-    try:
-        if payout > 0:
-            payout = await apply_win_payout(conn, interaction.user.id, payout, amt, "horserace")
-        else:
-            pass  # bet already deducted, loss is correct
-        await record_game(conn, interaction.user.id, won, amt, payout, "horserace")
-        await log_transaction(conn, interaction.user.id, "horserace", payout - amt)
-        if interaction.guild:
-            row = await get_user(conn, interaction.user.id)
-            member = interaction.guild.get_member(interaction.user.id)
-            if row and member:
-                await update_user_rank(member, row["wagered"])
-    except Exception as e:
-        print(f"[HORSERACE] DB error, refunding bet: {e}")
+        log_e = discord.Embed(title="🏇 Horse Race Result",
+                              color=C_WIN if won else C_LOSS)
+        log_e.add_field(name="Player",  value=interaction.user.mention,              inline=True)
+        log_e.add_field(name="Bet",     value=format_amount(amt),                    inline=True)
+        log_e.add_field(name="Horse",   value=f"{HORSE_EMOJIS[chosen]} {HORSE_NAMES[chosen]}", inline=True)
+        log_e.add_field(name="Winner",  value=f"{HORSE_EMOJIS[finished[0]]} {HORSE_NAMES[finished[0]]}", inline=True)
+        log_e.add_field(name="Payout",  value=format_amount(payout),                 inline=True)
+        log_e.add_field(name="Outcome", value="✅ WIN" if won else "❌ LOSS",         inline=True)
+        log_e.set_footer(text=now_ts())
+        await send_log(log_e)
+    except Exception as _hr_err:
+        print(f"[HORSERACE] Unexpected error, refunding bet: {_hr_err}")
         try:
-            await update_balance(conn, interaction.user.id, amt)
-        except Exception as e:
-
-            print(f"[ERROR] {type(e).__name__}: {e}")
-            pass
+            conn = await get_conn()
+            try:
+                await update_balance(conn, interaction.user.id, amt)
+            finally:
+                await release_conn(conn)
+        except Exception as _ref_err:
+            print(f"[HORSERACE] Refund also failed: {_ref_err}")
     finally:
-        await release_conn(conn)
-
-    log_e = discord.Embed(title="🏇 Horse Race Result",
-                          color=C_WIN if won else C_LOSS)
-    log_e.add_field(name="Player",  value=interaction.user.mention,              inline=True)
-    log_e.add_field(name="Bet",     value=format_amount(amt),                    inline=True)
-    log_e.add_field(name="Horse",   value=f"{HORSE_EMOJIS[chosen]} {HORSE_NAMES[chosen]}", inline=True)
-    log_e.add_field(name="Winner",  value=f"{HORSE_EMOJIS[finished[0]]} {HORSE_NAMES[finished[0]]}", inline=True)
-    log_e.add_field(name="Payout",  value=format_amount(payout),                 inline=True)
-    log_e.add_field(name="Outcome", value="✅ WIN" if won else "❌ LOSS",         inline=True)
-    log_e.set_footer(text=now_ts())
-    await send_log(log_e)
-    _end_game_session(interaction.user.id)
+        _end_game_session(interaction.user.id)
 
 BALLOON_POP_CHANCES = [
     0.24,  # pump 1  — EV 0.95x at cashout (5% edge)
@@ -8583,6 +8733,7 @@ class SlotsView(BaseGameView):
             )
         finally:
             await release_conn(conn)
+        stamp_cooldown("slots", self.creator.id)
 
         reels = _slots_roll()
 
@@ -8760,6 +8911,7 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("pumpballoon", interaction.user.id)
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
@@ -9059,6 +9211,7 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("colordice", interaction.user.id)
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
         return
@@ -9206,6 +9359,7 @@ async def cmd_upgrader(interaction: discord.Interaction, bet: str, multiplier: f
                 return
         finally:
             await release_conn(conn)
+        stamp_cooldown("upgrader", interaction.user.id)
 
     real_chance = upgrader_real_chance(multiplier)
     display_chance = upgrader_display_chance(multiplier)
@@ -9472,6 +9626,24 @@ async def cmd_setrewardlog(interaction: discord.Interaction, channel: discord.Te
     REWARD_LOG_ID = channel.id
     await interaction.response.send_message(
         f"✅ Rewards log will now be sent to {channel.mention}.", ephemeral=True)
+
+@bot.tree.command(name="setvouchlog", description="[Admin] Set the public vouch channel for big wins/deposits/withdrawals (250M+).")
+@app_commands.describe(channel="The public channel to post big win and transaction vouches")
+@admin_only()
+async def cmd_setvouchlog(interaction: discord.Interaction, channel: discord.TextChannel):
+    conn = await get_conn()
+    try:
+        await conn.execute(
+            """INSERT INTO bot_settings (key, value) VALUES ('channel_vouches', $1)
+               ON CONFLICT (key) DO UPDATE SET value=$1""",
+            str(channel.id)
+        )
+    finally:
+        await release_conn(conn)
+    global VOUCHES_CHANNEL_ID
+    VOUCHES_CHANNEL_ID = channel.id
+    await interaction.response.send_message(
+        f"✅ Vouch log set to {channel.mention}. Big wins and transactions (250M+) will post there.", ephemeral=True)
 
 @bot.tree.command(name="setgamelog", description="[Admin] Set the channel where game results are logged.")
 @app_commands.describe(channel="The game-log channel")
@@ -12533,40 +12705,40 @@ async def cmd_clearsync(interaction: discord.Interaction):
 
 import hashlib
 
-QUEST_MIN_BET  = 100_000   # 100K gems minimum bet for quest to count
+QUEST_MIN_BET  = 500_000   # 500K gems minimum bet for quest to count
 QUEST_DAY_CAP  = 9_000_000  # 9M gems max earnable from quests per day (3 quests × 3M max)
 
 QUEST_POOL = [
-    {"id": "play_coinflip_3",  "desc": "Play 3 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 3,  "reward": 1_000_000},
-    {"id": "play_coinflip_5",  "desc": "Play 5 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 5,  "reward": 1_500_000},
-    {"id": "play_mines_3",     "desc": "Play 3 Mines games",          "type": "play",   "game": "mines",     "target": 3,  "reward": 1_200_000},
-    {"id": "play_mines_5",     "desc": "Play 5 Mines games",          "type": "play",   "game": "mines",     "target": 5,  "reward": 1_800_000},
-    {"id": "play_blackjack_3", "desc": "Play 3 Blackjack games",      "type": "play",   "game": "blackjack", "target": 3,  "reward": 1_000_000},
-    {"id": "play_blackjack_5", "desc": "Play 5 Blackjack games",      "type": "play",   "game": "blackjack", "target": 5,  "reward": 1_500_000},
-    {"id": "play_roulette_3",  "desc": "Play 3 Roulette games",       "type": "play",   "game": "roulette",  "target": 3,  "reward": 1_000_000},
-    {"id": "play_dice_3",      "desc": "Play 3 Dice games",           "type": "play",   "game": "dice",      "target": 3,  "reward": 1_000_000},
-    {"id": "play_dice_5",      "desc": "Play 5 Dice games",           "type": "play",   "game": "dice",      "target": 5,  "reward": 1_500_000},
-    {"id": "play_hilo_5",      "desc": "Play 5 HiLo games",           "type": "play",   "game": "hilo",      "target": 5,  "reward": 1_200_000},
-    {"id": "play_any_5",       "desc": "Play 5 games (any)",          "type": "play",   "game": "any",       "target": 5,  "reward": 1_000_000},
-    {"id": "play_any_10",      "desc": "Play 10 games (any)",         "type": "play",   "game": "any",       "target": 10, "reward": 1_800_000},
-    {"id": "play_upgrader_3",  "desc": "Play 3 Upgrader games",       "type": "play",   "game": "upgrader",  "target": 3,  "reward": 1_200_000},
-    {"id": "play_baccarat_3",  "desc": "Play 3 Baccarat games",       "type": "play",   "game": "baccarat",  "target": 3,  "reward": 1_000_000},
-    {"id": "play_horserace_2", "desc": "Play 2 Horse Race games",     "type": "play",   "game": "horserace", "target": 2,  "reward": 1_000_000},
-    {"id": "play_slots_5",     "desc": "Play 5 Slots games",          "type": "play",   "game": "slots",     "target": 5,  "reward": 1_200_000},
-    {"id": "play_towers_3",    "desc": "Play 3 Towers games",         "type": "play",   "game": "towers",    "target": 3,  "reward": 1_100_000},
-    {"id": "play_balloon_3",   "desc": "Play 3 Balloon games",        "type": "play",   "game": "balloon",   "target": 3,  "reward": 1_000_000},
-    {"id": "wager_100k",       "desc": "Wager 100K gems total",        "type": "wager",  "game": "any",       "target": 100_000,   "reward": 1_000_000},
-    {"id": "wager_500k",       "desc": "Wager 500K gems total",        "type": "wager",  "game": "any",       "target": 500_000,   "reward": 1_500_000},
-    {"id": "wager_1m",         "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000, "reward": 2_000_000},
-    {"id": "wager_5m",         "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000, "reward": 3_000_000},
-    {"id": "win_coinflip_2",   "desc": "Win 2 Coinflip games",        "type": "win",    "game": "coinflip",  "target": 2,  "reward": 1_000_000},
-    {"id": "win_any_3",        "desc": "Win 3 games (any)",           "type": "win",    "game": "any",       "target": 3,  "reward": 1_000_000},
-    {"id": "win_any_5",        "desc": "Win 5 games (any)",           "type": "win",    "game": "any",       "target": 5,  "reward": 1_500_000},
-    {"id": "win_any_10",       "desc": "Win 10 games (any)",          "type": "win",    "game": "any",       "target": 10, "reward": 2_500_000},
-    {"id": "win_streak_3",     "desc": "Win 3 games in a row",        "type": "streak", "game": "any",       "target": 3,  "reward": 1_500_000},
-    {"id": "win_streak_5",     "desc": "Win 5 games in a row",        "type": "streak", "game": "any",       "target": 5,  "reward": 3_000_000},
-    {"id": "tip_someone",      "desc": "Tip another user any amount", "type": "tip",    "game": "any",       "target": 1,  "reward": 1_000_000},
-    {"id": "daily_claim",      "desc": "Claim your /daily bonus",     "type": "daily",  "game": "any",       "target": 1,  "reward": 1_000_000},
+    {"id": "play_coinflip_3",  "desc": "Play 5 Coinflip games",        "type": "play",   "game": "coinflip",  "target": 5,   "reward": 1_000_000},
+    {"id": "play_coinflip_5",  "desc": "Play 10 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 10,  "reward": 1_500_000},
+    {"id": "play_mines_3",     "desc": "Play 5 Mines games",           "type": "play",   "game": "mines",     "target": 5,   "reward": 1_200_000},
+    {"id": "play_mines_5",     "desc": "Play 10 Mines games",          "type": "play",   "game": "mines",     "target": 10,  "reward": 1_800_000},
+    {"id": "play_blackjack_3", "desc": "Play 5 Blackjack games",       "type": "play",   "game": "blackjack", "target": 5,   "reward": 1_000_000},
+    {"id": "play_blackjack_5", "desc": "Play 10 Blackjack games",      "type": "play",   "game": "blackjack", "target": 10,  "reward": 1_500_000},
+    {"id": "play_roulette_3",  "desc": "Play 5 Roulette games",        "type": "play",   "game": "roulette",  "target": 5,   "reward": 1_000_000},
+    {"id": "play_dice_3",      "desc": "Play 5 Dice games",            "type": "play",   "game": "dice",      "target": 5,   "reward": 1_000_000},
+    {"id": "play_dice_5",      "desc": "Play 10 Dice games",           "type": "play",   "game": "dice",      "target": 10,  "reward": 1_500_000},
+    {"id": "play_hilo_5",      "desc": "Play 10 HiLo games",           "type": "play",   "game": "hilo",      "target": 10,  "reward": 1_200_000},
+    {"id": "play_any_5",       "desc": "Play 10 games (any)",          "type": "play",   "game": "any",       "target": 10,  "reward": 1_000_000},
+    {"id": "play_any_10",      "desc": "Play 20 games (any)",          "type": "play",   "game": "any",       "target": 20,  "reward": 1_800_000},
+    {"id": "play_upgrader_3",  "desc": "Play 5 Upgrader games",        "type": "play",   "game": "upgrader",  "target": 5,   "reward": 1_200_000},
+    {"id": "play_baccarat_3",  "desc": "Play 5 Baccarat games",        "type": "play",   "game": "baccarat",  "target": 5,   "reward": 1_000_000},
+    {"id": "play_horserace_2", "desc": "Play 4 Horse Race games",      "type": "play",   "game": "horserace", "target": 4,   "reward": 1_000_000},
+    {"id": "play_slots_5",     "desc": "Play 10 Slots games",          "type": "play",   "game": "slots",     "target": 10,  "reward": 1_200_000},
+    {"id": "play_towers_3",    "desc": "Play 6 Towers games",          "type": "play",   "game": "towers",    "target": 6,   "reward": 1_100_000},
+    {"id": "play_balloon_3",   "desc": "Play 6 Balloon games",         "type": "play",   "game": "balloon",   "target": 6,   "reward": 1_000_000},
+    {"id": "wager_100k",       "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000,  "reward": 1_000_000},
+    {"id": "wager_500k",       "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000,  "reward": 1_500_000},
+    {"id": "wager_1m",         "desc": "Wager 10M gems total",         "type": "wager",  "game": "any",       "target": 10_000_000, "reward": 2_000_000},
+    {"id": "wager_5m",         "desc": "Wager 25M gems total",         "type": "wager",  "game": "any",       "target": 25_000_000, "reward": 3_000_000},
+    {"id": "win_coinflip_2",   "desc": "Win 4 Coinflip games",         "type": "win",    "game": "coinflip",  "target": 4,   "reward": 1_000_000},
+    {"id": "win_any_3",        "desc": "Win 5 games (any)",            "type": "win",    "game": "any",       "target": 5,   "reward": 1_000_000},
+    {"id": "win_any_5",        "desc": "Win 10 games (any)",           "type": "win",    "game": "any",       "target": 10,  "reward": 1_500_000},
+    {"id": "win_any_10",       "desc": "Win 20 games (any)",           "type": "win",    "game": "any",       "target": 20,  "reward": 2_500_000},
+    {"id": "win_streak_3",     "desc": "Win 5 games in a row",         "type": "streak", "game": "any",       "target": 5,   "reward": 1_500_000},
+    {"id": "win_streak_5",     "desc": "Win 8 games in a row",         "type": "streak", "game": "any",       "target": 8,   "reward": 3_000_000},
+    {"id": "tip_someone",      "desc": "Tip another user any amount",  "type": "tip",    "game": "any",       "target": 1,   "reward": 1_000_000},
+    {"id": "daily_claim",      "desc": "Claim your /daily bonus",      "type": "daily",  "game": "any",       "target": 1,   "reward": 1_000_000},
 ]
 
 QUEST_EMOJIS = {"play": "🎮", "wager": "💰", "win": "🏆", "streak": "🔥", "tip": "💸", "daily": "📅"}
