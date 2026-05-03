@@ -14762,3 +14762,4 @@ if __name__ == "__main__":
     if not TOKEN:
         print("[BOT] ❌ No TOKEN set — add TOKEN to your environment variables.")
     else:
+        bot.run(TOKEN)
