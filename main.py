@@ -7221,12 +7221,14 @@ def mines_calc_mult(mines: int, gems_found: int) -> float:
     return round(min(mult, MINES_MAX_MULT), 2)
 
 _MINES_DANGER_WEIGHTS = [
-    1,2,3,2,1,
-    2,4,6,4,2,
-    3,6,9,6,3,
-    2,4,6,4,2,
-    1,2,3,2,1,
-]  # center-heavy: index 12 (center) = weight 9
+    1,2,4,2,1,
+    2,6,10,6,2,
+    4,10,16,10,4,
+    2,6,10,6,2,
+    1,2,4,2,1,
+]  # heavily center-heavy — center tile (index 12) weight=16
+
+MINES_HOUSE_WIN = 0.72   # 72% of clicks after the first are rigged toward a bomb tile
 
 def mines_generate_grid(mines: int, force_win: bool = False) -> list:
     """Generate initial grid. Rigging happens per-click in MinesView._pick."""
@@ -7241,8 +7243,8 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
 
 def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
     """
-    Fully rigged board — after every safe click, bombs cluster toward
-    the tiles MOST LIKELY to be clicked next (adjacent + natural click paths).
+    Heavily rigged board — after every safe click, bombs cluster very aggressively
+    toward tiles most likely to be clicked next (adjacent + center-biased).
     Uses weighted sampling without replacement for correct mine count.
     """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
@@ -7255,15 +7257,13 @@ def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) ->
         r, c = divmod(idx, 5)
         dist  = abs(r - r_c) + abs(c - c_c)
         base  = _MINES_DANGER_WEIGHTS[idx]
-        if dist == 0:  return 0    # already revealed — never place bomb here
-        if dist == 1:  return base + 20   # immediately adjacent — very dangerous
-        if dist == 2:  return base + 10   # two hops away
-        if dist == 3:  return base + 3
-        return max(base - 3, 1)
+        if dist == 0:  return 0          # already revealed — never place bomb here
+        if dist == 1:  return base + 50  # immediately adjacent — extremely dangerous
+        if dist == 2:  return base + 25  # two hops away — very dangerous
+        if dist == 3:  return base + 8
+        return max(base - 2, 1)
 
     weights = [weight(i) for i in unrevealed]
-    total   = sum(weights)
-    # Weighted sampling WITHOUT replacement
     chosen  = []
     pool    = list(zip(unrevealed, weights))
     for _ in range(min(mines, len(pool))):
@@ -7458,7 +7458,11 @@ class MinesView(BaseGameView):
                 self.revealed.add(index)
                 self.gems_found += 1
 
-                if not self.done:
+                # Rig board after first gem — 72% of subsequent clicks push bombs toward player
+                if not self.done and self.gems_found > 1 and random.random() < MINES_HOUSE_WIN:
+                    self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
+                elif not self.done and self.gems_found == 1:
+                    # Always rig after first safe click
                     self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
 
                 gems_total = MINES_GRID_SIZE - self.mines
@@ -8151,7 +8155,13 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     _hr_forced = _force_result.pop(interaction.user.id, None)
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
-    else:                       winner_idx = random.randint(0, 3)
+    else:
+        # 46.5% player wins, 53.5% house wins
+        if random.random() < 0.465:
+            winner_idx = chosen  # player's horse wins
+        else:
+            loser_horses = [i for i in range(4) if i != chosen]
+            winner_idx = random.choice(loser_horses)  # one of the other 3 wins
 
     if not _start_game_session(interaction.user.id):
         await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
@@ -8247,6 +8257,7 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
                     f"└─────────────────────────┘"
                 )
             )
+            result_embed.set_image(url=racing_gif)
             _brand_embed(result_embed)
             await msg.edit(embed=result_embed)
         except Exception as _err:
