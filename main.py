@@ -1864,6 +1864,13 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         if suspended or already:
             return
 
+        # Enforce 60-day account age requirement
+        from datetime import timezone
+        account_age_days = (discord.utils.utcnow() - after.created_at.replace(tzinfo=timezone.utc)).days
+        if account_age_days < 60:
+            print(f"[INVITE] {after.name} account is only {account_age_days} days old — skipping reward")
+            return
+
         setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
         reward  = int(setting["value"]) if setting else 0
         if reward <= 0:
@@ -4189,6 +4196,15 @@ class DiceModeView(discord.ui.View):
         _brand_embed(e)
         await interaction.response.edit_message(embed=e, view=None)
 
+    async def on_timeout(self):
+        async with get_user_lock(self.creator.id):
+            conn = await get_conn()
+            try:
+                await update_balance(conn, self.creator.id, self.bet)
+            finally:
+                await release_conn(conn)
+        _end_game_session(self.creator.id)
+
 class DiceTargetView(discord.ui.View):
     """Step 2 — pick first to 1 / 2 / 3."""
     def __init__(self, creator, bet, mode: str):
@@ -4240,6 +4256,15 @@ class DiceTargetView(discord.ui.View):
         )
         _brand_embed(e)
         await interaction.response.edit_message(embed=e, view=None)
+
+    async def on_timeout(self):
+        async with get_user_lock(self.creator.id):
+            conn = await get_conn()
+            try:
+                await update_balance(conn, self.creator.id, self.bet)
+            finally:
+                await release_conn(conn)
+        _end_game_session(self.creator.id)
 
 class DiceLobbyView(discord.ui.View):
     """Step 3 — public lobby with Join / Cancel buttons."""
@@ -5097,11 +5122,7 @@ class BaccaratView(BaseGameView):
                 if payout > 0:
                     payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "baccarat")
                 if not is_push:
-                    await record_game(conn, self.creator.id, won, self.bet, payout)
-                else:
-                    await conn.execute(
-                        "UPDATE users SET wagered=wagered+$1, last_updated=$2 WHERE user_id=$3",
-                        self.bet, now_ts(), str(self.creator.id))
+                    await record_game(conn, self.creator.id, won, self.bet, payout, "baccarat")
                 await log_transaction(conn, self.creator.id, "baccarat", payout - self.bet)
                 if interaction.guild:
                     row = await get_user(conn, self.creator.id)
@@ -5392,7 +5413,7 @@ class BlackjackView(BaseGameView):
                 if payout > 0:
                     payout = await apply_win_payout(conn, self.creator.id, payout, total_bet, "blackjack")
                 if not is_push:
-                    await record_game(conn, self.creator.id, won, total_bet, payout)
+                    await record_game(conn, self.creator.id, won, total_bet, payout, "blackjack")
                     await log_transaction(conn, self.creator.id, "blackjack", payout - total_bet)
                     _rank_guild = interaction.guild or bot.get_guild(GUILD_ID)
                     if _rank_guild:
@@ -5623,7 +5644,7 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
             if payout > 0:
                 payout = await apply_win_payout(conn, interaction.user.id, payout, total_bet, "blackjack")
             if not is_push:
-                await record_game(conn, interaction.user.id, won, total_bet, payout)
+                await record_game(conn, interaction.user.id, won, total_bet, payout, "blackjack")
                 await log_transaction(conn, interaction.user.id, "blackjack", payout - total_bet)
                 if won and interaction.guild:
                     row = await get_user(conn, interaction.user.id)
@@ -5758,7 +5779,7 @@ class BlackjackDiceView(BaseGameView):
                 if payout > 0:
                     payout = await apply_win_payout(conn, self.creator.id, payout, total_bet, "blackjack_dice")
                 if not is_push:
-                    await record_game(conn, self.creator.id, won, total_bet, payout)
+                    await record_game(conn, self.creator.id, won, total_bet, payout, "blackjack_dice")
                     await log_transaction(conn, self.creator.id, "bjdice", payout - total_bet)
                     _rank_guild = interaction.guild or bot.get_guild(GUILD_ID)
                     if _rank_guild:
@@ -7986,10 +8007,10 @@ TICK_DELAY   = 0.9  # seconds between animation ticks
 HORSE_PAYOUT = 3.76  # 4 horses equal odds, 6% edge: fair=4x, house cut=3.76x
 
 HORSE_WIN_GIFS = [
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458264628957244/horserace_thunder_wins.gif?ex=69f88227&is=69f730a7&hm=01326f97e78a1beb613acbd499f46f215c542ffb3f833f7b54b5455b5f230010&",
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458269557129387/horserace_blaze_wins.gif?ex=69f88228&is=69f730a8&hm=ae24c6386b85313360de510c8e6101b543e5490b2edb3e6515dcded31662d230&",
-    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458604636143707/horserace_shadow_wins-4.gif?ex=69f88278&is=69f730f8&hm=b85f79b918200bee47683204aea1702c02e00f0b7fba87dbdfedb064786fc734&",
-    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458635925520466/horserace_storm_wins-1.gif?ex=69f8827f&is=69f730ff&hm=5acd751d5dccee81240a7761c67ce5a5f247d8713a0c5355178d6ea5a7fcd030&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458264628957244/horserace_thunder_wins.gif",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458269557129387/horserace_blaze_wins.gif",
+    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458604636143707/horserace_shadow_wins-4.gif",
+    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458635925520466/horserace_storm_wins-1.gif",
 ]
 
 def hr_render(positions: list, finished: list = None) -> str:
@@ -8160,6 +8181,10 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
 
         await interaction.response.send_message(embed=racing_embed)
         msg = await interaction.original_response()
+        try:
+            await msg.edit(embed=racing_embed)
+        except Exception as e:
+            print(f"[HORSERACE] gif edit failed: {e}")
         await asyncio.sleep(4.5)
 
         # ── Step 2: Determine finish order ────────────────────────────────────────
@@ -9562,10 +9587,8 @@ async def cmd_unverify(interaction: discord.Interaction, user: discord.Member):
 
 @bot.tree.command(name="setreward", description="[Admin] Set the gem reward for inviting a member with a 60+ day old account.")
 @app_commands.describe(amount="Gem reward per valid invite e.g. 50k, 1M. Set to 0 to disable.")
+@admin_only()
 async def cmd_setreward(interaction: discord.Interaction, amount: str):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
-        return
     amt = parse_amount(amount) if amount != "0" else 0
     if amt is None:
         await interaction.response.send_message("❌ Invalid amount.", ephemeral=True)
@@ -9591,10 +9614,8 @@ async def cmd_setreward(interaction: discord.Interaction, amount: str):
 
 @bot.tree.command(name="setinvitelog", description="[Admin] Set the channel where invite rewards are logged.")
 @app_commands.describe(channel="The channel to send invite reward notifications to")
+@admin_only()
 async def cmd_setinvitelog(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
-        return
     conn = await get_conn()
     try:
         await conn.execute(
@@ -12727,10 +12748,10 @@ QUEST_POOL = [
     {"id": "play_slots_5",     "desc": "Play 10 Slots games",          "type": "play",   "game": "slots",     "target": 10,  "reward": 1_200_000},
     {"id": "play_towers_3",    "desc": "Play 6 Towers games",          "type": "play",   "game": "towers",    "target": 6,   "reward": 1_100_000},
     {"id": "play_balloon_3",   "desc": "Play 6 Balloon games",         "type": "play",   "game": "balloon",   "target": 6,   "reward": 1_000_000},
-    {"id": "wager_100k",       "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000,  "reward": 1_000_000},
-    {"id": "wager_500k",       "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000,  "reward": 1_500_000},
-    {"id": "wager_1m",         "desc": "Wager 10M gems total",         "type": "wager",  "game": "any",       "target": 10_000_000, "reward": 2_000_000},
-    {"id": "wager_5m",         "desc": "Wager 25M gems total",         "type": "wager",  "game": "any",       "target": 25_000_000, "reward": 3_000_000},
+    {"id": "wager_1m",         "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000,  "reward": 1_000_000},
+    {"id": "wager_5m",         "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000,  "reward": 1_500_000},
+    {"id": "wager_10m",        "desc": "Wager 10M gems total",         "type": "wager",  "game": "any",       "target": 10_000_000, "reward": 2_000_000},
+    {"id": "wager_25m",        "desc": "Wager 25M gems total",         "type": "wager",  "game": "any",       "target": 25_000_000, "reward": 3_000_000},
     {"id": "win_coinflip_2",   "desc": "Win 4 Coinflip games",         "type": "win",    "game": "coinflip",  "target": 4,   "reward": 1_000_000},
     {"id": "win_any_3",        "desc": "Win 5 games (any)",            "type": "win",    "game": "any",       "target": 5,   "reward": 1_000_000},
     {"id": "win_any_5",        "desc": "Win 10 games (any)",           "type": "win",    "game": "any",       "target": 10,  "reward": 1_500_000},
