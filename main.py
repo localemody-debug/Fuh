@@ -8007,10 +8007,10 @@ TICK_DELAY   = 0.9  # seconds between animation ticks
 HORSE_PAYOUT = 3.76  # 4 horses equal odds, 6% edge: fair=4x, house cut=3.76x
 
 HORSE_WIN_GIFS = [
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458264628957244/horserace_thunder_wins.gif",
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458269557129387/horserace_blaze_wins.gif",
-    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458604636143707/horserace_shadow_wins-4.gif",
-    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458635925520466/horserace_storm_wins-1.gif",
+    "https://files.catbox.moe/6mash0.gif",   # Thunder
+    "https://files.catbox.moe/ahb4kf.gif",   # Blaze
+    "https://files.catbox.moe/bn483o.gif",   # Shadow
+    "https://files.catbox.moe/0ahzi2.gif",   # Storm
 ]
 
 def hr_render(positions: list, finished: list = None) -> str:
