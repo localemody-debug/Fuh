@@ -8176,11 +8176,13 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
             )
         )
         racing_gif = HORSE_WIN_GIFS[winner_idx]
-        racing_embed.set_image(url=racing_gif)
         _brand_embed(racing_embed)
 
+        # Send WITHOUT gif first, then after short delay edit to add gif so Discord animates it
         await interaction.response.send_message(embed=racing_embed)
         msg = await interaction.original_response()
+        await asyncio.sleep(0.5)
+        racing_embed.set_image(url=racing_gif)
         try:
             await msg.edit(embed=racing_embed)
         except Exception as e:
@@ -14760,4 +14762,3 @@ if __name__ == "__main__":
     if not TOKEN:
         print("[BOT] ❌ No TOKEN set — add TOKEN to your environment variables.")
     else:
-        bot.run(TOKEN)
