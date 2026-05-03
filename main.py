@@ -7986,10 +7986,10 @@ TICK_DELAY   = 0.9  # seconds between animation ticks
 HORSE_PAYOUT = 3.76  # 4 horses equal odds, 6% edge: fair=4x, house cut=3.76x
 
 HORSE_WIN_GIFS = [
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500119779204399114/horserace_thunder_wins-1.gif?ex=69f746ea&is=69f5f56a&hm=65d564c070866500bbcd00ff641ecdb47de635b9abf00db7939fbaf632e92085&",
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500119898691731587/horserace_blaze_wins-1.gif?ex=69f74706&is=69f5f586&hm=83f744aff14f097d4479820fe571ab7ebea885a2686b322856d97ce5f168534d&",
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500120613652660255/horserace_shadow_wins-4.gif?ex=69f747b1&is=69f5f631&hm=21acb54bb5b0a409a910f3e7ab1597c294cfceb698764faa011f89660d19602b&",
-    "https://cdn.discordapp.com/attachments/1497626985315307621/1500120300367642804/horserace_storm_wins-1.gif?ex=69f74766&is=69f5f5e6&hm=432130e697381a0e8be1018a3a8329f9acef3afe18370a64a6ea96a0de9bad2f&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458264628957244/horserace_thunder_wins.gif?ex=69f88227&is=69f730a7&hm=01326f97e78a1beb613acbd499f46f215c542ffb3f833f7b54b5455b5f230010&",
+    "https://cdn.discordapp.com/attachments/1497626985315307621/1500458269557129387/horserace_blaze_wins.gif?ex=69f88228&is=69f730a8&hm=ae24c6386b85313360de510c8e6101b543e5490b2edb3e6515dcded31662d230&",
+    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458604636143707/horserace_shadow_wins-4.gif?ex=69f88278&is=69f730f8&hm=b85f79b918200bee47683204aea1702c02e00f0b7fba87dbdfedb064786fc734&",
+    "https://cdn.discordapp.com/attachments/1497626987118727329/1500458635925520466/horserace_storm_wins-1.gif?ex=69f8827f&is=69f730ff&hm=5acd751d5dccee81240a7761c67ce5a5f247d8713a0c5355178d6ea5a7fcd030&",
 ]
 
 def hr_render(positions: list, finished: list = None) -> str:
