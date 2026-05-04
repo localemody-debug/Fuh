@@ -242,12 +242,12 @@ COINFLIP_TAILS_GIF    = os.getenv("COINFLIP_TAILS_GIF",    "https://i.imgur.com/
 COINFLIP_SPINNING_GIF = os.getenv("COINFLIP_SPINNING_GIF", "")  # Optional spinning GIF while flipping
 
 DICE_GIF = [
-    os.getenv("DICE_GIF_1", "https://cdn.discordapp.com/attachments/1497626985315307621/1497964042218639380/1filedice1-ezgif.com-effects.gif?ex=69ef6f3a&is=69ee1dba&hm=04c274ca0f29a0e2734eb9e69594e5be6b0ee843402c6b63ec89cd1199b1fbd6&"),  # 1
-    os.getenv("DICE_GIF_2", "https://cdn.discordapp.com/attachments/1497626985315307621/1497963571307614218/2_dice_1.gif?ex=69ef6eca&is=69ee1d4a&hm=8d6eeb6bd4a9d7da7b523cc7d5964d9e6692f91a72d76176f5cbcea4dcb77acf&"),  # 2
-    os.getenv("DICE_GIF_3", "https://cdn.discordapp.com/attachments/1497626985315307621/1497964050859167925/3_dice_gif_gif.gif?ex=69ef6f3c&is=69ee1dbc&hm=8642b4f8e4ebab95c6779d743ee240e3c7565f98f567c7705998e1521fed5de0&"),  # 3
-    os.getenv("DICE_GIF_4", "https://cdn.discordapp.com/attachments/1497626985315307621/1497963860274184262/4_dicess.gif?ex=69ef6f0f&is=69ee1d8f&hm=5f0e3e3f064d081678226385518c11409cfda6a55d908ff800d0561b271af304&"),  # 4
-    os.getenv("DICE_GIF_5", "https://cdn.discordapp.com/attachments/1497626985315307621/1497963744154747061/5_dices_orig.gif?ex=69ef6ef3&is=69ee1d73&hm=e215812c82248af16df99ed4cdac5f4c0b5c374e8c79c5a5a46da4510af5314d&"),  # 5
-    os.getenv("DICE_GIF_6", "https://cdn.discordapp.com/attachments/1497626985315307621/1497963851713347746/6_dice_orig.gif?ex=69ef6f0d&is=69ee1d8d&hm=93e5015a861664e3339c4b3eb8184f1aaff2c37adfd84d9511e91f268da59a9e&"),  # 6
+    os.getenv("DICE_GIF_1", "https://files.catbox.moe/k4776y.gif"),  # 1
+    os.getenv("DICE_GIF_2", "https://files.catbox.moe/t2uvun.gif"),  # 2
+    os.getenv("DICE_GIF_3", "https://files.catbox.moe/2y39n5.gif"),  # 3
+    os.getenv("DICE_GIF_4", "https://files.catbox.moe/uedv0g.gif"),  # 4
+    os.getenv("DICE_GIF_5", "https://files.catbox.moe/xe80ug.gif"),  # 5
+    os.getenv("DICE_GIF_6", "https://files.catbox.moe/euzkhk.gif"),  # 6
 ]
 
 def get_dice_gif(roll: int) -> str:
@@ -1184,24 +1184,12 @@ async def update_user_rank(member: discord.Member, wagered: int):
         target_role = discord.utils.get(member.guild.roles, name=target_role_name)
         if not target_role:
             return
-    rank_roles = []
-    for r_low, r_high, r_emoji, r_name, r_color in RANK_DATA:
-        role = discord.utils.get(member.guild.roles, name=f"{r_emoji} {r_name}")
-        if role:
-            rank_roles.append(role)
-    roles_to_remove = [r for r in rank_roles if r != target_role and r in member.roles]
-    if roles_to_remove:
-        try:
-            await member.remove_roles(*roles_to_remove, reason="Rank update")
-        except Exception as e:
-
-            print(f"[ERROR] {type(e).__name__}: {e}")
-            pass
+    # Keep all previously earned rank roles — only add the new one if not already held.
+    # Roles are NEVER removed so players keep all ranks they earned.
     if target_role not in member.roles:
         try:
             await member.add_roles(target_role, reason=f"Rank updated to {name}")
         except Exception as e:
-
             print(f"[ERROR] {type(e).__name__}: {e}")
             pass
 
@@ -1600,8 +1588,13 @@ async def _setup_guild_channels(guild: discord.Guild):
             ("General", None, chat_ow(), True),
         ]),
         ("🔒 Staff", staff_only_ow(admin_role, mod_role, tmod_role), [
-            ("🛡️｜staff-chat",  "Staff only chat.",    staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("📋｜mod-logs",    "Moderation logs.",    staff_only_ow(admin_role, mod_role),             False),
+            ("🛡️｜staff-chat",   "Staff only chat.",           staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("📋｜mod-logs",     "Moderation logs.",           staff_only_ow(admin_role, mod_role),             False),
+            ("🎲｜game-log",     "Game results log.",          staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("💰｜finance-log",  "Deposits & withdrawals log.", staff_only_ow(admin_role, mod_role),            False),
+            ("📨｜invite-log",   "Invite rewards log.",        staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("🎁｜reward-log",   "Rain/promo/daily/boost log.",staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("💸｜tip-log",      "Admin tip log.",             staff_only_ow(admin_role, mod_role),            False),
         ]),
     ]
 
@@ -4664,9 +4657,9 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
     view._original_message = await interaction.original_response()
 
 ROULETTE_GIF_URLS = {
-    "RED":    "https://cdn.discordapp.com/attachments/1497626978004500580/1500040552727707800/roulette_red.gif?ex=69f6fd21&is=69f5aba1&hm=89d59321c368f45d72b912a33b8c2e959e75543d4dd46463142bc49f5a1f6ac4&",
-    "BLUE":   "https://cdn.discordapp.com/attachments/1497626978004500580/1500040249022218361/roulette_blue.gif?ex=69f6fcd8&is=69f5ab58&hm=8f582993bdca8e3e132031fd2ade3a22e6686f163321f673abb97c6fc4be29b3&",
-    "YELLOW": "https://cdn.discordapp.com/attachments/1497626978004500580/1500040306513543188/roulette_yellow.gif?ex=69f6fce6&is=69f5ab66&hm=0e9bb071c4320bbce27f265507a5775326201d31548ebf07ee3662e3d9e050ad&",
+    "RED":    "https://files.catbox.moe/mu402a.gif",
+    "BLUE":   "https://files.catbox.moe/odo9xa.gif",
+    "YELLOW": "https://files.catbox.moe/s4ogaj.gif",
 }
 
 
@@ -4871,6 +4864,7 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -5237,6 +5231,7 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -5985,6 +5980,7 @@ async def cmd_blackjackdice(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -6298,6 +6294,7 @@ async def cmd_war(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -6729,6 +6726,7 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -7129,6 +7127,7 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -7678,6 +7677,7 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
                 bal = row["balance"] if row else 0
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.", ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -8045,6 +8045,7 @@ async def cmd_scratch(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -9002,6 +9003,7 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -9302,6 +9304,7 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
+                _end_game_session(interaction.user.id)
                 return
         finally:
             await release_conn(conn)
@@ -9950,8 +9953,8 @@ class WithdrawTicketView(discord.ui.View):
 
     @discord.ui.button(label="✅ Mark Delivered", style=discord.ButtonStyle.green, custom_id="ticket_deliver")
     async def deliver_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not any(r.name == OWNER_ROLE_NAME for r in getattr(interaction.user, 'roles', [])):
+            await interaction.response.send_message("❌ Owner only.", ephemeral=True)
             return
         conn = await get_conn()
         try:
@@ -9999,8 +10002,8 @@ class WithdrawTicketView(discord.ui.View):
 
     @discord.ui.button(label="❌ Refund & Cancel", style=discord.ButtonStyle.red, custom_id="ticket_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not any(r.name == OWNER_ROLE_NAME for r in getattr(interaction.user, 'roles', [])):
+            await interaction.response.send_message("❌ Owner only.", ephemeral=True)
             return
         conn = await get_conn()
         try:
@@ -10080,8 +10083,14 @@ async def cmd_deposit(interaction: discord.Interaction):
                 guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
                 interaction.user:   discord.PermissionOverwrite(read_messages=True, send_messages=True),
             }
-            if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            if admin_role: overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            tmod_role_dep    = discord.utils.get(guild.roles, name=TMOD_ROLE_NAME)
+            manager_role_dep = discord.utils.get(guild.roles, name=MANAGER_ROLE_NAME)
+            owner_role_dep   = discord.utils.get(guild.roles, name=OWNER_ROLE_NAME)
+            if staff_role:        overwrites[staff_role]        = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if admin_role:        overwrites[admin_role]        = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if tmod_role_dep:     overwrites[tmod_role_dep]     = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if manager_role_dep:  overwrites[manager_role_dep]  = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if owner_role_dep:    overwrites[owner_role_dep]    = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
             ticket_channel = await guild.create_text_channel(
                 name=f"deposit-{interaction.user.name}-{ticket_id}",
@@ -10295,8 +10304,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
                 guild.me:                          discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
                 interaction.user:                  discord.PermissionOverwrite(read_messages=True, send_messages=True),
             }
-            if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            if admin_role: overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            # Withdraw tickets: ONLY Owner can access
             if owner_role: overwrites[owner_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
             target_category = ticket_ch.category
@@ -10336,7 +10344,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
 
             view = WithdrawTicketView(ticket_id=ticket_id, user_id=interaction.user.id)
             ping_content = f"{interaction.user.mention}"
-            if staff_role: ping_content += f" {staff_role.mention}"
+            if owner_role: ping_content += f" {owner_role.mention}"
             await thread.send(content=ping_content, embed=ticket_e, view=view)
 
             try:
