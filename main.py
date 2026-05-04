@@ -68,7 +68,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.52   # 52/48 edge across all games
+BOT_HOUSE_WIN        = 0.53   # 53/47 edge across all games
 BJ_DEALER_STAND      = 17    # Dealer stands at this total (16=player friendly, 17=standard, 19=heavy edge)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -4388,18 +4388,29 @@ async def _process_dice_roll(state: DiceGameState, roller: discord.User,
     dice_emoji = DICE_EMOJIS[roll - 1] if roll - 1 < len(DICE_EMOJIS) else str(roll)
     roll_gif   = get_dice_gif(roll)
 
+    # Ping the other player if they still need to roll
+    other = state.opponent if roller.id == state.creator.id else state.creator
+    needs_roll = other and other.id in state.waiting_roll
+
     roll_embed = discord.Embed(
+        title=f"🎲  {roller.display_name} Rolled a {roll}!",
+        description=f"{other.mention} Use `/roll` now!" if needs_roll else None,
         color=C_GOLD,
-        description=f"{roller.mention} rolled a **{roll}**!"
     )
-    if roll_gif:
-        roll_embed.set_image(url=roll_gif)
-    _brand_embed(roll_embed)
+    roll_embed.set_footer(text="🔒 100% Cryptographically Random | Provably Fair")
 
     if interaction is not None:
-        await interaction.followup.send(content=roller.mention, embed=roll_embed)
+        plain = await interaction.followup.send(embed=roll_embed)
     else:
-        await channel.send(content=roller.mention, embed=roll_embed)
+        plain = await channel.send(embed=roll_embed)
+
+    await asyncio.sleep(0.3)
+    if roll_gif:
+        roll_embed.set_image(url=roll_gif)
+    try:
+        await plain.edit(embed=roll_embed)
+    except Exception as e:
+        print(f"[ROLL GIF EDIT] {e}")
 
     if not state.waiting_roll and state.opponent and state.creator.id in state.round_rolls and state.opponent.id in state.round_rolls:
         await _resolve_dice_round(state, channel)
@@ -4526,6 +4537,10 @@ async def cmd_dice(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message(
+            "⏳ You already have an active game running!", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -4542,10 +4557,6 @@ async def cmd_dice(interaction: discord.Interaction, bet: str):
             await release_conn(conn)
         stamp_cooldown("dice", interaction.user.id)
 
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message(
-            "⏳ You already have an active game running!", ephemeral=True)
-        return
 
     mode_embed = discord.Embed(
         title="🎲  Dice Battle  ·  Pick a Mode",
@@ -4613,6 +4624,9 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -4631,9 +4645,6 @@ async def cmd_coinflip(interaction: discord.Interaction, bet: str, side: str):
 
     pf    = pf_new_game()
     pf["game_name"] = "Coinflip"
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view  = CoinflipView(interaction.user, amt, side)
     view.creator_paid = True  # already deducted upfront
     view._pf_game_id  = pf["game_id"]
@@ -4846,6 +4857,9 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -4862,9 +4876,6 @@ async def cmd_roulette(interaction: discord.Interaction, bet: str):
             await release_conn(conn)
         stamp_cooldown("roulette", interaction.user.id)
 
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view  = RouletteView(interaction.user, amt)
     view.used = False  # will be set True on spin
     embed = discord.Embed(
@@ -5212,6 +5223,9 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -5228,9 +5242,6 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
             await release_conn(conn)
         stamp_cooldown("baccarat", interaction.user.id)
 
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view  = BaccaratView(interaction.user, amt)
     embed = discord.Embed(
         color=C_GOLD,
@@ -5345,18 +5356,20 @@ class BlackjackView(BaseGameView):
         self.done = True
         self.stop()
 
-        while bj_total(self.dealer_hand) < BJ_DEALER_STAND:
-            self.dealer_hand.append(self.deck.pop())
-            await asyncio.sleep(0.5)
-            try:
-                await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
-            except Exception as e:
+        pt = bj_total(self.player_hand)
 
-                print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        # Skip dealer draw if player busted
+        if pt <= 21:
+            while bj_total(self.dealer_hand) < BJ_DEALER_STAND:
+                self.dealer_hand.append(self.deck.pop())
+                await asyncio.sleep(0.5)
+                try:
+                    await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
+                except Exception as e:
+                    print(f"[ERROR] {type(e).__name__}: {e}")
+                    pass
 
         total_bet = self.bet + self.extra_bet
-        pt        = bj_total(self.player_hand)
         dt        = bj_total(self.dealer_hand)
         player_bj = is_blackjack(self.player_hand) and self.extra_bet == 0
         dealer_bj = is_blackjack(self.dealer_hand)
@@ -5483,7 +5496,6 @@ class BlackjackView(BaseGameView):
             try:
                 await interaction.edit_original_response(embed=self.game_embed(hide_dealer=True), view=self)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
             await asyncio.sleep(0.4)
@@ -5566,6 +5578,10 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
+
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -5574,6 +5590,7 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
             if not deducted:
                 row = await get_user(conn, interaction.user.id)
                 bal = row["balance"] if row else 0
+                _end_game_session(interaction.user.id)
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
@@ -5585,9 +5602,6 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
     deck = build_deck()
     ph   = [deck.pop(), deck.pop()]
     dh   = [deck.pop(), deck.pop()]
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = BlackjackView(interaction.user, amt, deck, ph, dh)
     view._bet_deducted = True  # already deducted upfront
 
@@ -5729,18 +5743,20 @@ class BlackjackDiceView(BaseGameView):
         self.done = True
         self.stop()
 
-        while bjd_total(self.dealer_dice) < 17:
-            self.dealer_dice.append(bjd_roll())
-            await asyncio.sleep(0.4)
-            try:
-                await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
-            except Exception as e:
+        pt = bjd_total(self.player_dice)
 
-                print(f"[ERROR] {type(e).__name__}: {e}")
-                pass
+        # Skip dealer draw if player already busted
+        if pt <= 21:
+            while bjd_total(self.dealer_dice) < 17:
+                self.dealer_dice.append(bjd_roll())
+                await asyncio.sleep(0.4)
+                try:
+                    await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
+                except Exception as e:
+                    print(f"[ERROR] {type(e).__name__}: {e}")
+                    pass
 
         total_bet = self.bet + self.extra_bet
-        pt = bjd_total(self.player_dice)
         dt = bjd_total(self.dealer_dice)
         player_bj = bjd_is_blackjack(self.player_dice) and self.extra_bet == 0
 
@@ -5795,9 +5811,9 @@ class BlackjackDiceView(BaseGameView):
             print(f"[BJDICE DB ERROR] {_db_err}")
 
         try:
-            await msg.edit(embed=bj_embed, view=None)
+            await self._original_message.edit(embed=bj_embed, view=None)
         except Exception as e:
-            print(f'[BJ INSTANT RESULT FAILED] {e}')
+            print(f'[BJDICE RESULT FAILED] {e}')
 
         log_e = discord.Embed(title="🎲 Blackjack Dice Result", color=color)
         log_e.add_field(name="Player",  value=self.creator.mention,        inline=True)
@@ -5841,11 +5857,29 @@ class BlackjackDiceView(BaseGameView):
             self.stop()
             return
         self.player_dice.append(bjd_roll())
-        if bjd_total(self.player_dice) >= 21:
+        last_roll = self.player_dice[-1]
+        roll_gif  = get_dice_gif(last_roll)
+        total     = bjd_total(self.player_dice)
+
+        # Send roll gif embed matching /roll style
+        roll_embed = discord.Embed(
+            title=f"🎲  {interaction.user.display_name} Rolled a {last_roll}!",
+            color=C_GOLD
+        )
+        roll_embed.set_footer(text="🔒 100% Cryptographically Random | Provably Fair")
+        try:
+            channel = interaction.channel or await bot.fetch_channel(interaction.channel_id)
+            plain_msg = await channel.send(embed=roll_embed)
+            await asyncio.sleep(0.3)
+            roll_embed.set_image(url=roll_gif)
+            await plain_msg.edit(embed=roll_embed)
+        except Exception as e:
+            print(f"[BJDICE ROLL GIF] {e}")
+
+        if total >= 21:
             try:
                 await interaction.edit_original_response(embed=self.game_embed(hide_dealer=True), view=self)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
             await asyncio.sleep(0.4)
@@ -5896,6 +5930,23 @@ class BlackjackDiceView(BaseGameView):
             return
         self.extra_bet = self.bet
         self.player_dice.append(bjd_roll())
+        last_roll = self.player_dice[-1]
+        roll_gif  = get_dice_gif(last_roll)
+
+        roll_embed = discord.Embed(
+            title=f"🎲  {interaction.user.display_name} Rolled a {last_roll}!",
+            color=C_GOLD
+        )
+        roll_embed.set_footer(text="🔒 100% Cryptographically Random | Provably Fair")
+        try:
+            channel = interaction.channel or await bot.fetch_channel(interaction.channel_id)
+            plain_msg = await channel.send(embed=roll_embed)
+            await asyncio.sleep(0.3)
+            roll_embed.set_image(url=roll_gif)
+            await plain_msg.edit(embed=roll_embed)
+        except Exception as e:
+            print(f"[BJDICE DOUBLE ROLL GIF] {e}")
+
         await self._end_game(interaction)
 
 @bot.tree.command(name="blackjackdice", description="Play Blackjack with dice — roll to 21!")
@@ -5920,6 +5971,9 @@ async def cmd_blackjackdice(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -5938,9 +5992,6 @@ async def cmd_blackjackdice(interaction: discord.Interaction, bet: str):
 
     player_dice = [bjd_roll(), bjd_roll()]
     dealer_dice = [bjd_roll(), bjd_roll()]
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = BlackjackDiceView(interaction.user, amt, player_dice, dealer_dice)
     view._bet_deducted = True  # already deducted upfront
     await interaction.response.send_message(embed=view.game_embed(), view=view)
@@ -6233,6 +6284,9 @@ async def cmd_war(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -6249,9 +6303,6 @@ async def cmd_war(interaction: discord.Interaction, bet: str):
             await release_conn(conn)
         stamp_cooldown("war", interaction.user.id)
 
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = WarView(interaction.user, amt)
     description = (
         f"💰 **Bet** • {format_amount(amt)} 💎\
@@ -6664,6 +6715,9 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -6681,9 +6735,6 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
         stamp_cooldown("hilo", interaction.user.id)
 
     first_card = hilo_card()
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view       = HiloView(interaction.user, amt, first_card)
     view.bet_deducted = True
 
@@ -7064,6 +7115,9 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -7081,9 +7135,6 @@ async def cmd_towers(interaction: discord.Interaction, bet: str):
         stamp_cooldown("towers", interaction.user.id)
 
     tower = generate_tower()
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view  = TowersView(interaction.user, amt, tower)
     view.bet_deducted = True
     view._update_buttons()
@@ -7614,6 +7665,9 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
         await interaction.response.send_message(
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -7628,9 +7682,6 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
         finally:
             await release_conn(conn)
         stamp_cooldown("mines", interaction.user.id)
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = MinesView(interaction.user, amt, mines)
     view.bet_deducted = True
     await interaction.response.send_message(embed=view.game_embed(), view=view)
@@ -7980,6 +8031,9 @@ async def cmd_scratch(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -7995,9 +8049,6 @@ async def cmd_scratch(interaction: discord.Interaction, bet: str):
         finally:
             await release_conn(conn)
         stamp_cooldown("scratch", interaction.user.id)
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = ScratchView(interaction.user, amt)
     view.bet_deducted = True
     await interaction.response.send_message(embed=view.game_embed(), view=view)
@@ -8131,6 +8182,10 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
+
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -8138,12 +8193,14 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
             row = await get_user(conn, interaction.user.id)
             if not row or row["balance"] < amt:
                 bal = row["balance"] if row else 0
+                _end_game_session(interaction.user.id)
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
                 return
             deducted = await deduct_balance_safe(conn, interaction.user.id, amt)
             if not deducted:
+                _end_game_session(interaction.user.id)
                 await interaction.response.send_message("❌ Insufficient balance.", ephemeral=True)
                 return
         finally:
@@ -8162,10 +8219,6 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
         else:
             loser_horses = [i for i in range(4) if i != chosen]
             winner_idx = random.choice(loser_horses)  # one of the other 3 wins
-
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
 
     try:
         chosen_emoji = HORSE_EMOJIS[chosen]
@@ -8935,6 +8988,9 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -8950,9 +9006,6 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
         finally:
             await release_conn(conn)
         stamp_cooldown("pumpballoon", interaction.user.id)
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = BalloonView(interaction.user, amt)
     view.bet_deducted = True
     await interaction.response.send_message(embed=view.game_embed(), view=view)
@@ -9235,6 +9288,9 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
         await interaction.response.send_message(
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -9250,9 +9306,6 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
         finally:
             await release_conn(conn)
         stamp_cooldown("colordice", interaction.user.id)
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     view = ColorDiceView(interaction.user, amt)
     view.used = True  # bet already deducted; mark to prevent double deduction
     await interaction.response.send_message(embed=view.game_embed() if False else cd_game_embed(amt), view=view)
@@ -9380,6 +9433,10 @@ async def cmd_upgrader(interaction: discord.Interaction, bet: str, multiplier: f
             f"❌ Max bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
 
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
+        return
+
     async with get_user_lock(interaction.user.id):
         conn = await get_conn()
         try:
@@ -9387,12 +9444,14 @@ async def cmd_upgrader(interaction: discord.Interaction, bet: str, multiplier: f
             row = await get_user(conn, interaction.user.id)
             if not row or row["balance"] < amt:
                 bal = row["balance"] if row else 0
+                _end_game_session(interaction.user.id)
                 await interaction.response.send_message(
                     f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
                     ephemeral=True)
                 return
             deducted = await deduct_balance_safe(conn, interaction.user.id, amt)
             if not deducted:
+                _end_game_session(interaction.user.id)
                 await interaction.response.send_message("❌ Insufficient balance.", ephemeral=True)
                 return
         finally:
@@ -9416,9 +9475,6 @@ async def cmd_upgrader(interaction: discord.Interaction, bet: str, multiplier: f
     else:
         final_pos = random.uniform(win_boundary, 0.999)
 
-    if not _start_game_session(interaction.user.id):
-        await interaction.response.send_message("⏳ You already have an active game running! Finish it before starting a new one.", ephemeral=True)
-        return
     await interaction.response.send_message(
         embed=upgrader_embed(amt, multiplier, outcome="pending", arrow_pos=0.0))
     msg = await interaction.original_response()
@@ -14772,5 +14828,5 @@ ACHIEVEMENTS = [
 if __name__ == "__main__":
     if not TOKEN:
         print("[BOT] ❌ No TOKEN set — add TOKEN to your environment variables.")
-    else:
+   else:
         bot.run(TOKEN)
