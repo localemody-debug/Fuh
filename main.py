@@ -1817,7 +1817,6 @@ async def on_member_join(member: discord.Member):
                         VALUES ($1, $2, $3, $4)
                         ON CONFLICT (member_id) DO UPDATE
                             SET inviter_id=$3, joined_at=$4
-                            WHERE pending_verifications.inviter_id IS DISTINCT FROM $3
                         """,
                         str(member.id), str(guild.id), inviter_id, now_ts()
                     )
@@ -1846,15 +1845,15 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
         inviter_id = pending["inviter_id"]
 
-        await conn.execute(
-            "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-        )
-
         suspended = await conn.fetchrow(
             "SELECT 1 FROM suspended_invite_rewards WHERE user_id=$1", inviter_id)
         already = await conn.fetchrow(
             "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(after.id))
         if suspended or already:
+            # Clean up pending row so it does not accumulate, but skip payout
+            await conn.execute(
+                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+            )
             return
 
         # Enforce 60-day account age requirement
@@ -1873,6 +1872,11 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         inviter_obj = guild.get_member(int(inviter_id)) or await bot.fetch_user(int(inviter_id))
         if not inviter_obj:
             return
+
+        # All checks passed — safe to delete pending record and pay out
+        await conn.execute(
+            "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+        )
 
         await ensure_user(conn, inviter_obj)
         await update_balance(conn, int(inviter_id), reward)
