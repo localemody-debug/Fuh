@@ -95,8 +95,8 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.53   # 53/47 edge across all games
-BJ_DEALER_STAND      = 17    # Dealer stands at this total (16=player friendly, 17=standard, 19=heavy edge)
+BOT_HOUSE_WIN        = 0.535  # 53.5/46.5 edge across all games
+BJ_DEALER_STAND      = 18    # Dealer stands at this total — 18 gives ~7% house edge
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -720,6 +720,16 @@ async def init_db():
                 worst_streak    INTEGER NOT NULL DEFAULT 0
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS quest_progress (
+                user_id  TEXT NOT NULL,
+                date_str TEXT NOT NULL,
+                quest_id TEXT NOT NULL,
+                progress BIGINT NOT NULL DEFAULT 0,
+                claimed  BOOLEAN NOT NULL DEFAULT FALSE,
+                PRIMARY KEY (user_id, date_str, quest_id)
+            )
+        """)
     print("[DB] PostgreSQL ready ✓")
 
 async def ensure_user(conn, user: discord.User):
@@ -845,17 +855,6 @@ async def record_game(conn, user_id: int, won: bool, bet: int, payout: int, game
         wagered_increment, 1 if won else 0, 0 if won else 1, new_streak, new_max, now_ts(), str(user_id)
     )
     if game not in WAGER_REQ_EXCLUDED_GAMES:
-        inv_row = await conn.fetchrow(
-            "SELECT reward_amt, wagered_so_far, req_met FROM invite_rewards WHERE invitee_id=$1",
-            str(user_id)
-        )
-        if inv_row and not inv_row["req_met"]:
-            new_wagered = inv_row["wagered_so_far"] + bet
-            req_met = new_wagered >= inv_row["reward_amt"]
-            await conn.execute(
-                "UPDATE invite_rewards SET wagered_so_far=$1, req_met=$2 WHERE invitee_id=$3",
-                new_wagered, req_met, str(user_id)
-            )
         wr_row = await conn.fetchrow(
             "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
             str(user_id)
@@ -1898,29 +1897,38 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
         reward  = int(float(setting["value"])) if setting and setting["value"] else 0
         if reward <= 0:
+            print(f"[INVITE] No reward configured — set one with /setreward")
             return
 
-        guild       = after.guild
-        inviter_obj = guild.get_member(int(inviter_id)) or await bot.fetch_user(int(inviter_id))
+        guild = after.guild
+        inviter_obj = guild.get_member(int(inviter_id))
+        if inviter_obj is None:
+            try:
+                inviter_obj = await bot.fetch_user(int(inviter_id))
+            except Exception as e:
+                print(f"[INVITE] Could not fetch inviter {inviter_id}: {e}")
+                return
         if not inviter_obj:
+            print(f"[INVITE] Inviter {inviter_id} not found — skipping payout")
             return
 
-        # All checks passed — safe to delete pending record and pay out
-        await conn.execute(
-            "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-        )
+        # All checks passed — wrap everything in a transaction so it's atomic
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+            )
+            await ensure_user(conn, inviter_obj)
+            await update_balance(conn, int(inviter_id), reward)
+            await log_transaction(conn, int(inviter_id), "invite_reward", reward,
+                                  f"invited {after.name} (Member role confirmed)")
+            await add_wager_req(conn, int(inviter_id), int(reward * 1.5), "invite_reward")
+            await conn.execute(
+                """INSERT INTO invite_rewards (invitee_id, inviter_id, rewarded_at, reward_amt, wagered_so_far, req_met)
+                   VALUES ($1, $2, $3, $4, 0, FALSE) ON CONFLICT (invitee_id) DO NOTHING""",
+                str(after.id), inviter_id, now_ts(), reward
+            )
 
-        await ensure_user(conn, inviter_obj)
-        await update_balance(conn, int(inviter_id), reward)
-        await log_transaction(conn, int(inviter_id), "invite_reward", reward,
-                              f"invited {after.name} (Member role confirmed)")
-        await add_wager_req(conn, int(inviter_id), reward, "invite_reward")
-        await conn.execute(
-            """INSERT INTO invite_rewards (invitee_id, inviter_id, rewarded_at, reward_amt, wagered_so_far, req_met)
-               VALUES ($1, $2, $3, $4, 0, FALSE) ON CONFLICT (invitee_id) DO NOTHING""",
-            str(after.id), inviter_id, now_ts(), reward
-        )
-        print(f"[INVITE] Paid reward to {inviter_obj} ({format_amount(reward)}) — {after.name} received Member role")
+        print(f"[INVITE] ✅ Paid {format_amount(reward)} to {inviter_obj} — {after.name} got Member role")
 
         log_e = discord.Embed(
             title="✦  Invite Reward Triggered",
@@ -2543,7 +2551,7 @@ async def cmd_daily(interaction: discord.Interaction):
 
             await update_balance(conn, interaction.user.id, reward)
             await log_transaction(conn, interaction.user.id, "daily", reward, rank_name)
-            await add_wager_req(conn, interaction.user.id, reward, "daily")
+            await add_wager_req(conn, interaction.user.id, int(reward * 1.5), "daily")
             try:
                 await update_quest_progress(conn, interaction.user.id, "daily", "any", 1, bet=0)
             except Exception as _qe:
@@ -2573,6 +2581,14 @@ async def cmd_daily(interaction: discord.Interaction):
     _brand_embed(embed)
 
     await interaction.response.send_message(embed=embed)
+
+    log_e = discord.Embed(title="🎁 Daily Claimed", color=C_WIN)
+    log_e.add_field(name="User",    value=f"{interaction.user.mention} `{interaction.user.id}`", inline=True)
+    log_e.add_field(name="Rank",    value=rank_name,                                             inline=True)
+    log_e.add_field(name="Reward",  value=format_amount(reward),                                 inline=True)
+    log_e.add_field(name="Balance", value=format_amount(new_bal),                                inline=True)
+    log_e.set_footer(text=now_ts())
+    await send_reward_log(log_e)
 
 @bot.tree.command(name="tip", description="Send gems to another user.")
 @app_commands.describe(user="Who to tip", amount="Amount e.g. 5k, 1M")
@@ -2613,7 +2629,7 @@ async def cmd_tip(interaction: discord.Interaction, user: discord.Member, amount
             )
             await log_transaction(conn, interaction.user.id, "tip_sent", -amt, f"to {user.id}")
             await log_transaction(conn, user.id, "tip_recv", amt, f"from {interaction.user.id}")
-            await add_wager_req(conn, user.id, amt, "tip_recv")  # recipient must wager tip before withdrawing
+            await add_wager_req(conn, user.id, int(amt * 1.5), "tip_recv")  # recipient must wager 1.5x tip before withdrawing
             try:
                 await update_quest_progress(conn, interaction.user.id, "tip", "any", 1, bet=0)
             except Exception as _qe:
@@ -2890,7 +2906,7 @@ async def cmd_redeemcode(interaction: discord.Interaction, code: str):
         new_uses = row["uses"] + 1
         await update_balance(conn, interaction.user.id, amt)
         await log_transaction(conn, interaction.user.id, "promo_redeem", amt, code)
-        await add_wager_req(conn, interaction.user.id, amt, "promo_redeem")
+        await add_wager_req(conn, interaction.user.id, int(amt * 1.5), "promo_redeem")
         if new_uses >= row["max_uses"]:
             await conn.execute("UPDATE promocodes SET active=FALSE WHERE code=$1", code)
 
@@ -3131,7 +3147,7 @@ Nobody joined — gems refunded to host.",
                        ON CONFLICT (user_id) DO UPDATE SET rain_count = user_stats.rain_count + 1""",
                     str(uid)
                 )
-                await add_wager_req(conn, uid, share, "rain_recv")
+                await add_wager_req(conn, uid, int(share * 1.5), "rain_recv")
         finally:
             await release_conn(conn)
 
@@ -5462,7 +5478,7 @@ class BlackjackView(BaseGameView):
         elif dt > 21:
             result, payout, color = "DEALER BUST", total_bet * 2, C_WIN
         elif player_bj and not dealer_bj:
-            payout = min(int(total_bet * 2.5), MAX_PAYOUT)
+            payout = min(int(total_bet * 2.4), MAX_PAYOUT)
             result, color = "BLACKJACK", C_WIN
         elif dealer_bj and not player_bj:
             result, payout, color = "DEALER BLACKJACK", 0, C_LOSS
@@ -6842,7 +6858,7 @@ async def cmd_hilo(interaction: discord.Interaction, bet: str):
 TOWER_ROWS    = 10
 TOWER_COLS    = 3
 TOWER_SAFE    = 2   # safe tiles per row (1 bomb)
-TOWER_ROW_MULTS = [1.175, 1.175, 1.1946, 1.1946, 1.2142, 1.2142, 1.2338, 1.2338, 1.2534, 1.273]  # 6% edge
+TOWER_ROW_MULTS = [1.183, 1.183, 1.203, 1.203, 1.223, 1.223, 1.243, 1.243, 1.263, 1.283]  # 7% edge
 
 def tower_cumulative_mult(rows_cleared: int) -> float:
     mult = 1.0
@@ -7808,7 +7824,7 @@ def scratch_generate(force_win: bool = False, force_lose: bool = False) -> list:
     """
     if force_win:        win = True
     elif force_lose:     win = False
-    else:                win = random.random() < 0.2448  # 24.48% win rate → 6% edge
+    else:                win = random.random() < 0.2325  # 23.25% win rate → 7% edge
 
     if win:
         winner = random.choices(SCRATCH_EMOJIS, weights=SCRATCH_WEIGHTS, k=1)[0]
@@ -8461,15 +8477,15 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
         _end_game_session(interaction.user.id)
 
 BALLOON_POP_CHANCES = [
-    0.24,  # pump 1  — EV 0.95x at cashout (5% edge)
-    0.33,  # pump 2
-    0.43,  # pump 3
-    0.53,  # pump 4
-    0.63,  # pump 5
-    0.74,  # pump 6
-    0.85,  # pump 7
-    0.93,  # pump 8
-    0.98,  # pump 9+
+    0.245,  # pump 1  — 7% edge
+    0.335,  # pump 2
+    0.435,  # pump 3
+    0.535,  # pump 4
+    0.635,  # pump 5
+    0.745,  # pump 6
+    0.855,  # pump 7
+    0.935,  # pump 8
+    0.985,  # pump 9+
 ]
 
 BALLOON_SIZES = ["🔵", "🔵", "🟣", "🟣", "🟠", "🟠", "🔴", "🔴", "💢", "💥"]
@@ -9112,7 +9128,7 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
-BOT_HOUSE_WIN_CD = 0.52    # 52/48 edge matching all other games
+BOT_HOUSE_WIN_CD = 0.535   # 53.5/46.5 edge matching all other games
 
 CD_COLORS = [
     ("🔴", "Red"),
@@ -9421,10 +9437,10 @@ def upgrader_display_chance(mult: float) -> float:
     return 1.0 / mult
 
 def upgrader_real_chance(mult: float) -> float:
-    """Actual win probability — shown * 0.875 (12.5% hidden edge).
-    e.g. shown=40% → real=35%.
+    """Actual win probability — display * 0.93 (7% hidden edge).
+    e.g. shown=40% → real=37.2%.
     """
-    return (1.0 / mult) * 0.94  # 6% hidden edge
+    return (1.0 / mult) * 0.93  # 7% hidden edge
 
 UPGRADER_WHEEL_SIZE = 40
 
@@ -12751,7 +12767,7 @@ async def cmd_rakeback(interaction: discord.Interaction):
             await update_balance(conn, interaction.user.id, reward)
             await log_transaction(conn, interaction.user.id, "rakeback", reward,
                                   f"{rate*100:.1f}% of {wagered_since}")
-            await add_wager_req(conn, interaction.user.id, reward, "rakeback")
+            await add_wager_req(conn, interaction.user.id, int(reward * 1.5), "rakeback")
 
             await conn.execute(
                 """INSERT INTO bot_settings (key, value) VALUES ($1, '0')
@@ -12796,7 +12812,7 @@ async def cmd_rakeback(interaction: discord.Interaction):
     log_e.add_field(name="Wagered", value=format_amount(wagered_since), inline=True)
     log_e.add_field(name="Reward",  value=format_amount(reward),     inline=True)
     log_e.set_footer(text=now_ts())
-    await send_log(log_e)
+    await send_reward_log(log_e)
 
 @bot.tree.command(name="sync", description="[Owner] Force sync all slash commands to this server instantly.")
 @owner_only()
@@ -12833,40 +12849,45 @@ async def cmd_clearsync(interaction: discord.Interaction):
 
 import hashlib
 
-QUEST_MIN_BET  = 500_000   # 500K gems minimum bet for quest to count
-QUEST_DAY_CAP  = 9_000_000  # 9M gems max earnable from quests per day (3 quests × 3M max)
+QUEST_MIN_BET  = 2_000_000   # 2M gems minimum bet for quest to count
+QUEST_DAY_CAP  = 5_000_000   # 5M gems max earnable from quests per day
 
 QUEST_POOL = [
-    {"id": "play_coinflip_3",  "desc": "Play 5 Coinflip games",        "type": "play",   "game": "coinflip",  "target": 5,   "reward": 1_000_000},
-    {"id": "play_coinflip_5",  "desc": "Play 10 Coinflip games",       "type": "play",   "game": "coinflip",  "target": 10,  "reward": 1_500_000},
-    {"id": "play_mines_3",     "desc": "Play 5 Mines games",           "type": "play",   "game": "mines",     "target": 5,   "reward": 1_200_000},
-    {"id": "play_mines_5",     "desc": "Play 10 Mines games",          "type": "play",   "game": "mines",     "target": 10,  "reward": 1_800_000},
-    {"id": "play_blackjack_3", "desc": "Play 5 Blackjack games",       "type": "play",   "game": "blackjack", "target": 5,   "reward": 1_000_000},
-    {"id": "play_blackjack_5", "desc": "Play 10 Blackjack games",      "type": "play",   "game": "blackjack", "target": 10,  "reward": 1_500_000},
-    {"id": "play_roulette_3",  "desc": "Play 5 Roulette games",        "type": "play",   "game": "roulette",  "target": 5,   "reward": 1_000_000},
-    {"id": "play_dice_3",      "desc": "Play 5 Dice games",            "type": "play",   "game": "dice",      "target": 5,   "reward": 1_000_000},
-    {"id": "play_dice_5",      "desc": "Play 10 Dice games",           "type": "play",   "game": "dice",      "target": 10,  "reward": 1_500_000},
-    {"id": "play_hilo_5",      "desc": "Play 10 HiLo games",           "type": "play",   "game": "hilo",      "target": 10,  "reward": 1_200_000},
-    {"id": "play_any_5",       "desc": "Play 10 games (any)",          "type": "play",   "game": "any",       "target": 10,  "reward": 1_000_000},
-    {"id": "play_any_10",      "desc": "Play 20 games (any)",          "type": "play",   "game": "any",       "target": 20,  "reward": 1_800_000},
-    {"id": "play_upgrader_3",  "desc": "Play 5 Upgrader games",        "type": "play",   "game": "upgrader",  "target": 5,   "reward": 1_200_000},
-    {"id": "play_baccarat_3",  "desc": "Play 5 Baccarat games",        "type": "play",   "game": "baccarat",  "target": 5,   "reward": 1_000_000},
-    {"id": "play_horserace_2", "desc": "Play 4 Horse Race games",      "type": "play",   "game": "horserace", "target": 4,   "reward": 1_000_000},
-    {"id": "play_slots_5",     "desc": "Play 10 Slots games",          "type": "play",   "game": "slots",     "target": 10,  "reward": 1_200_000},
-    {"id": "play_towers_3",    "desc": "Play 6 Towers games",          "type": "play",   "game": "towers",    "target": 6,   "reward": 1_100_000},
-    {"id": "play_balloon_3",   "desc": "Play 6 Balloon games",         "type": "play",   "game": "balloon",   "target": 6,   "reward": 1_000_000},
-    {"id": "wager_1m",         "desc": "Wager 1M gems total",          "type": "wager",  "game": "any",       "target": 1_000_000,  "reward": 1_000_000},
-    {"id": "wager_5m",         "desc": "Wager 5M gems total",          "type": "wager",  "game": "any",       "target": 5_000_000,  "reward": 1_500_000},
-    {"id": "wager_10m",        "desc": "Wager 10M gems total",         "type": "wager",  "game": "any",       "target": 10_000_000, "reward": 2_000_000},
-    {"id": "wager_25m",        "desc": "Wager 25M gems total",         "type": "wager",  "game": "any",       "target": 25_000_000, "reward": 3_000_000},
-    {"id": "win_coinflip_2",   "desc": "Win 4 Coinflip games",         "type": "win",    "game": "coinflip",  "target": 4,   "reward": 1_000_000},
-    {"id": "win_any_3",        "desc": "Win 5 games (any)",            "type": "win",    "game": "any",       "target": 5,   "reward": 1_000_000},
-    {"id": "win_any_5",        "desc": "Win 10 games (any)",           "type": "win",    "game": "any",       "target": 10,  "reward": 1_500_000},
-    {"id": "win_any_10",       "desc": "Win 20 games (any)",           "type": "win",    "game": "any",       "target": 20,  "reward": 2_500_000},
-    {"id": "win_streak_3",     "desc": "Win 5 games in a row",         "type": "streak", "game": "any",       "target": 5,   "reward": 1_500_000},
-    {"id": "win_streak_5",     "desc": "Win 8 games in a row",         "type": "streak", "game": "any",       "target": 8,   "reward": 3_000_000},
-    {"id": "tip_someone",      "desc": "Tip another user any amount",  "type": "tip",    "game": "any",       "target": 1,   "reward": 1_000_000},
-    {"id": "daily_claim",      "desc": "Claim your /daily bonus",      "type": "daily",  "game": "any",       "target": 1,   "reward": 1_000_000},
+    # --- Play quests (harder targets) ---
+    {"id": "play_coinflip_3",  "desc": "Play 15 Coinflip games",        "type": "play",   "game": "coinflip",  "target": 15,  "reward": 500_000},
+    {"id": "play_coinflip_5",  "desc": "Play 30 Coinflip games",        "type": "play",   "game": "coinflip",  "target": 30,  "reward": 800_000},
+    {"id": "play_mines_3",     "desc": "Play 15 Mines games",           "type": "play",   "game": "mines",     "target": 15,  "reward": 600_000},
+    {"id": "play_mines_5",     "desc": "Play 30 Mines games",           "type": "play",   "game": "mines",     "target": 30,  "reward": 900_000},
+    {"id": "play_blackjack_3", "desc": "Play 15 Blackjack games",       "type": "play",   "game": "blackjack", "target": 15,  "reward": 500_000},
+    {"id": "play_blackjack_5", "desc": "Play 30 Blackjack games",       "type": "play",   "game": "blackjack", "target": 30,  "reward": 800_000},
+    {"id": "play_roulette_3",  "desc": "Play 15 Roulette games",        "type": "play",   "game": "roulette",  "target": 15,  "reward": 500_000},
+    {"id": "play_dice_3",      "desc": "Play 15 Dice games",            "type": "play",   "game": "dice",      "target": 15,  "reward": 500_000},
+    {"id": "play_dice_5",      "desc": "Play 30 Dice games",            "type": "play",   "game": "dice",      "target": 30,  "reward": 800_000},
+    {"id": "play_hilo_5",      "desc": "Play 25 HiLo games",            "type": "play",   "game": "hilo",      "target": 25,  "reward": 600_000},
+    {"id": "play_any_5",       "desc": "Play 25 games (any)",           "type": "play",   "game": "any",       "target": 25,  "reward": 500_000},
+    {"id": "play_any_10",      "desc": "Play 50 games (any)",           "type": "play",   "game": "any",       "target": 50,  "reward": 900_000},
+    {"id": "play_upgrader_3",  "desc": "Play 15 Upgrader games",        "type": "play",   "game": "upgrader",  "target": 15,  "reward": 600_000},
+    {"id": "play_baccarat_3",  "desc": "Play 15 Baccarat games",        "type": "play",   "game": "baccarat",  "target": 15,  "reward": 500_000},
+    {"id": "play_horserace_2", "desc": "Play 12 Horse Race games",      "type": "play",   "game": "horserace", "target": 12,  "reward": 500_000},
+    {"id": "play_slots_5",     "desc": "Play 25 Slots games",           "type": "play",   "game": "slots",     "target": 25,  "reward": 600_000},
+    {"id": "play_towers_3",    "desc": "Play 20 Towers games",          "type": "play",   "game": "towers",    "target": 20,  "reward": 550_000},
+    {"id": "play_balloon_3",   "desc": "Play 20 Balloon games",         "type": "play",   "game": "balloon",   "target": 20,  "reward": 500_000},
+    # --- Wager quests (require real volume — reward is ~10% of target) ---
+    {"id": "wager_1m",         "desc": "Wager 10M gems total",          "type": "wager",  "game": "any",       "target": 10_000_000,  "reward": 500_000},
+    {"id": "wager_5m",         "desc": "Wager 50M gems total",          "type": "wager",  "game": "any",       "target": 50_000_000,  "reward": 1_000_000},
+    {"id": "wager_10m",        "desc": "Wager 100M gems total",         "type": "wager",  "game": "any",       "target": 100_000_000, "reward": 2_000_000},
+    {"id": "wager_25m",        "desc": "Wager 250M gems total",         "type": "wager",  "game": "any",       "target": 250_000_000, "reward": 3_500_000},
+    # --- Win quests ---
+    {"id": "win_coinflip_2",   "desc": "Win 10 Coinflip games",         "type": "win",    "game": "coinflip",  "target": 10,  "reward": 500_000},
+    {"id": "win_any_3",        "desc": "Win 15 games (any)",            "type": "win",    "game": "any",       "target": 15,  "reward": 500_000},
+    {"id": "win_any_5",        "desc": "Win 25 games (any)",            "type": "win",    "game": "any",       "target": 25,  "reward": 800_000},
+    {"id": "win_any_10",       "desc": "Win 50 games (any)",            "type": "win",    "game": "any",       "target": 50,  "reward": 2_000_000},
+    # --- Streak quests (hardest — high variance) ---
+    {"id": "win_streak_3",     "desc": "Win 7 games in a row",          "type": "streak", "game": "any",       "target": 7,   "reward": 1_000_000},
+    {"id": "win_streak_5",     "desc": "Win 12 games in a row",         "type": "streak", "game": "any",       "target": 12,  "reward": 2_500_000},
+    # --- Social / bonus quests ---
+    {"id": "tip_someone",      "desc": "Tip another user any amount",   "type": "tip",    "game": "any",       "target": 1,   "reward": 300_000},
+    {"id": "daily_claim",      "desc": "Claim your /daily bonus",       "type": "daily",  "game": "any",       "target": 1,   "reward": 300_000},
 ]
 
 QUEST_EMOJIS = {"play": "🎮", "wager": "💰", "win": "🏆", "streak": "🔥", "tip": "💸", "daily": "📅"}
@@ -12929,10 +12950,6 @@ async def reset_streak_quest(conn, user_id: int):
 async def update_quest_progress(conn, user_id: int, quest_type: str, game: str, amount: int = 1, bet: int = 0):
     """Update quest progress. Auto-pays reward the moment a quest completes — no /quests needed.
     tip and daily quests have no minimum bet requirement."""
-    try:
-        await ensure_quest_tables(conn)
-    except Exception:
-        pass
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     quests = get_daily_quests(user_id, today)
     for q in quests:
@@ -12964,6 +12981,8 @@ async def update_quest_progress(conn, user_id: int, quest_type: str, game: str, 
             reward = q["reward"]
             await update_balance(conn, user_id, reward)
             await log_transaction(conn, user_id, "quest_reward", reward, q["desc"])
+            # Quest rewards require 1.5x wager before withdrawal
+            await add_wager_req(conn, user_id, int(reward * 1.5), "quest_reward")
             await conn.execute("""
                 INSERT INTO quest_progress (user_id, date_str, quest_id, progress, claimed)
                 VALUES ($1, $2, $3, $4, TRUE)
@@ -12972,19 +12991,27 @@ async def update_quest_progress(conn, user_id: int, quest_type: str, game: str, 
             """, str(user_id), today, q["id"], new_progress)
 
             try:
-                user = bot.get_user(user_id)
-                if user is None:
-                    user = await bot.fetch_user(user_id)
-                if user:
+                user_obj = bot.get_user(user_id) or await bot.fetch_user(user_id)
+                if user_obj:
                     embed = discord.Embed(
                         title="Quest Complete!",
                         description=f"**{q['desc']}**\n\n**+{format_amount(reward)}** 💎 has been added to your balance automatically.",
                         color=C_VIP
                     )
                     _brand_embed(embed)
-                    await user.send(embed=embed)
+                    await user_obj.send(embed=embed)
             except Exception as _dm_err:
                 print(f"[QUEST] Could not DM {user_id}: {_dm_err}")
+
+            try:
+                log_e = discord.Embed(title="🎯 Quest Completed", color=C_VIP)
+                log_e.add_field(name="User",   value=f"<@{user_id}>",       inline=True)
+                log_e.add_field(name="Quest",  value=q["desc"],             inline=True)
+                log_e.add_field(name="Reward", value=format_amount(reward), inline=True)
+                log_e.set_footer(text=now_ts())
+                await send_reward_log(log_e)
+            except Exception as _log_err:
+                print(f"[QUEST] Log error: {_log_err}")
 
 @bot.tree.command(name="quests", description="View and claim your daily quests. Refreshes every 24 hours.")
 async def cmd_quests(interaction: discord.Interaction):
@@ -13005,15 +13032,6 @@ async def cmd_quests(interaction: discord.Interaction):
             reward   = q["reward"]
             emoji    = QUEST_EMOJIS.get(q["type"], "🎯")
             done     = progress >= target
-
-            if done and not claimed:
-                await conn.execute("""
-                    INSERT INTO quest_progress (user_id, date_str, quest_id, progress, claimed)
-                    VALUES ($1, $2, $3, $4, TRUE)
-                    ON CONFLICT (user_id, date_str, quest_id)
-                    DO UPDATE SET claimed = TRUE
-                """, str(interaction.user.id), today, q["id"], progress)
-                claimed = True
 
             bar_filled = min(10, int((progress / target) * 10))
             bar        = "\u2588" * bar_filled + "\u2591" * (10 - bar_filled)
@@ -13037,10 +13055,13 @@ async def cmd_quests(interaction: discord.Interaction):
         mins     = rem // 60
 
         total_reward   = sum(q["reward"] for q in quests)
-        claimed_reward = sum(
-            q["reward"] for q in quests
-            if (await get_quest_progress(conn, interaction.user.id, today, q["id"]))["claimed"]
-        )
+
+        # Collect claimed rewards without await in comprehension
+        claimed_reward = 0
+        for q in quests:
+            prog = await get_quest_progress(conn, interaction.user.id, today, q["id"])
+            if prog["claimed"]:
+                claimed_reward += q["reward"]
 
         embed = discord.Embed(
             title="🎯  Daily Quests",
@@ -13236,7 +13257,7 @@ async def cmd_affiliateclaim(interaction: discord.Interaction):
 
         await update_balance(conn, interaction.user.id, pending)
         await log_transaction(conn, interaction.user.id, "affiliate_claim", pending, "Affiliate earnings claimed")
-        await add_wager_req(conn, interaction.user.id, pending, "affiliate_claim")
+        await add_wager_req(conn, interaction.user.id, int(pending * 1.5), "affiliate_claim")
         await conn.execute("UPDATE affiliate_codes SET pending_balance = 0 WHERE user_id=$1", uid)
 
         embed = discord.Embed(
@@ -13249,6 +13270,15 @@ async def cmd_affiliateclaim(interaction: discord.Interaction):
         embed.set_footer(text="Keep sharing your code to earn more!")
         embed.set_thumbnail(url=await get_avatar(interaction.user))
         await interaction.response.send_message(embed=embed)
+
+        log_e = discord.Embed(title="🤝 Affiliate Earnings Claimed", color=C_WIN)
+        log_e.add_field(name="User",       value=f"{interaction.user.mention} `{interaction.user.id}`", inline=True)
+        log_e.add_field(name="Claimed",    value=format_amount(pending),                                inline=True)
+        log_e.add_field(name="All-Time",   value=format_amount(row["total_earned"]),                   inline=True)
+        log_e.add_field(name="Referrals",  value=str(row["referral_count"]),                           inline=True)
+        log_e.set_footer(text=now_ts())
+        await send_reward_log(log_e)
+        await send_finance_log(log_e)
     except Exception as e:
         print(f"[ERROR] affiliateclaim: {type(e).__name__}: {e}")
         import traceback; traceback.print_exc()
