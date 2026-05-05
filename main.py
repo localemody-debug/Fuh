@@ -10678,7 +10678,10 @@ async def cmd_stock(interaction: discord.Interaction):
         await release_conn(conn)
     embed = await _stock_embed(rows, page=0)
     view  = StockView(rows, page=0) if len(rows) > 10 else None
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    if view:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    else:
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="addstock", description="[Admin] Add an item to the stock shop.")
 @app_commands.describe(
