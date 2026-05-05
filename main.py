@@ -50,12 +50,16 @@ async def _load_channel_ids():
             """Return the first text channel whose name contains fragment (case-insensitive)."""
             return next((c for c in guild.text_channels if fragment in c.name.lower()), None)
 
-        ch = find_ch("game-log");    LOG_CHANNEL_ID    = ch.id if ch else LOG_CHANNEL_ID
-        ch = find_ch("finance-log"); FINANCE_LOG_ID    = ch.id if ch else FINANCE_LOG_ID
-        ch = find_ch("invite-log");  INVITE_LOG_ID     = ch.id if ch else INVITE_LOG_ID
-        ch = find_ch("reward-log");  REWARD_LOG_ID     = ch.id if ch else REWARD_LOG_ID
-        ch = find_ch("tip-log");     TIP_LOG_ID        = ch.id if ch else TIP_LOG_ID
-        ch = find_ch("tip");         TIP_PUBLIC_LOG_ID = ch.id if ch else TIP_PUBLIC_LOG_ID
+        ch = find_ch("game-log");    LOG_CHANNEL_ID     = ch.id if ch else LOG_CHANNEL_ID
+        ch = find_ch("finance-log"); FINANCE_LOG_ID     = ch.id if ch else FINANCE_LOG_ID
+        ch = find_ch("invite-log");  INVITE_LOG_ID      = ch.id if ch else INVITE_LOG_ID
+        ch = find_ch("reward-log");  REWARD_LOG_ID      = ch.id if ch else REWARD_LOG_ID
+        ch = find_ch("tip-log");     TIP_LOG_ID         = ch.id if ch else TIP_LOG_ID
+        # Public tips channel is named "tips" or "🎁｜tips" — must NOT match "tip-log"
+        ch = next((c for c in guild.text_channels
+                   if "tip" in c.name.lower() and "log" not in c.name.lower()), None)
+        TIP_PUBLIC_LOG_ID = ch.id if ch else TIP_PUBLIC_LOG_ID
+        # Vouches: target the public vouch channel (not the staff one)
         ch = find_ch("vouch");       VOUCHES_CHANNEL_ID = ch.id if ch else VOUCHES_CHANNEL_ID
         ch = find_ch("case-battle"); CASE_BATTLE_LOG_ID = CASE_BATTLE_CHANNEL_ID = ch.id if ch else CASE_BATTLE_LOG_ID
 
@@ -1494,14 +1498,14 @@ async def _auto_create_channels():
       - Staff channels: Staff roles only.
       - @everyone: locked out of everything by default unless explicitly granted.
     """
-    await asyncio.sleep(5)
-    await _load_channel_ids()
+    await asyncio.sleep(8)  # wait for _auto_create_roles (sleeps 3s) to finish first
 
     for guild in bot.guilds:
         try:
             await _setup_guild_channels(guild)
         except Exception as e:
             print(f"[SETUP] Channel setup error in {guild.name}: {e}")
+    # _setup_guild_channels calls _load_channel_ids at the end — no extra call needed
 
 async def _setup_guild_channels(guild: discord.Guild):
     """Create all channels and categories for a guild if they don't already exist."""
@@ -1883,13 +1887,16 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
         # Enforce 60-day account age requirement
         from datetime import timezone
-        account_age_days = (discord.utils.utcnow() - after.created_at.replace(tzinfo=timezone.utc)).days
+        created = after.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        account_age_days = (discord.utils.utcnow() - created).days
         if account_age_days < 60:
             print(f"[INVITE] {after.name} account is only {account_age_days} days old — skipping reward")
             return
 
         setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
-        reward  = int(setting["value"]) if setting else 0
+        reward  = int(float(setting["value"])) if setting and setting["value"] else 0
         if reward <= 0:
             return
 
@@ -1949,16 +1956,24 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         await release_conn(conn)
 
 async def send_invite_log(embed: discord.Embed):
-    """Send to the invite rewards log channel (set via /setinvitelog → INVITE_LOG_ID global)."""
-    if not INVITE_LOG_ID:
-        print("[INVITE LOG] No channel set — use /setinvitelog")
+    """Send to the invite rewards log channel."""
+    ch_id = INVITE_LOG_ID
+    if not ch_id:
+        # Try to find by name if auto-detect hasn't run yet
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "invite-log" in c.name.lower()), None)
+            if found:
+                ch_id = found.id
+    if not ch_id:
+        print("[INVITE LOG] No invite-log channel found")
         return
-    ch = bot.get_channel(INVITE_LOG_ID)
+    ch = bot.get_channel(ch_id)
     if ch is None:
         try:
-            ch = await bot.fetch_channel(INVITE_LOG_ID)
+            ch = await bot.fetch_channel(ch_id)
         except Exception as e:
-            print(f"[INVITE LOG] Could not fetch channel {INVITE_LOG_ID}: {e}")
+            print(f"[INVITE LOG] Could not fetch channel {ch_id}: {e}")
             return
     try:
         await ch.send(embed=embed)
@@ -1968,16 +1983,20 @@ async def send_invite_log(embed: discord.Embed):
         print(f"[INVITE LOG] Failed to send: {e}")
 
 async def send_reward_log(embed: discord.Embed):
-    """Send to the rewards log channel (rain, promo, daily, boost — set via /setrewardlog)."""
-    if not REWARD_LOG_ID:
+    """Send to the rewards log channel (rain, promo, daily, boost)."""
+    ch_id = REWARD_LOG_ID
+    if not ch_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "reward-log" in c.name.lower()), None)
+            if found: ch_id = found.id
+    if not ch_id:
         return
-    ch = bot.get_channel(REWARD_LOG_ID)
+    ch = bot.get_channel(ch_id)
     if ch is None:
-        try:
-            ch = await bot.fetch_channel(REWARD_LOG_ID)
+        try: ch = await bot.fetch_channel(ch_id)
         except Exception as e:
-            print(f"[REWARD LOG] Could not fetch channel {REWARD_LOG_ID}: {e}")
-            return
+            print(f"[REWARD LOG] Could not fetch channel {ch_id}: {e}"); return
     try:
         await ch.send(embed=embed)
     except Exception as e:
@@ -1985,15 +2004,19 @@ async def send_reward_log(embed: discord.Embed):
 
 async def send_log(embed: discord.Embed):
     """Send to the game results log channel."""
-    if not LOG_CHANNEL_ID:
+    ch_id = LOG_CHANNEL_ID
+    if not ch_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "game-log" in c.name.lower()), None)
+            if found: ch_id = found.id
+    if not ch_id:
         return
-    ch = bot.get_channel(LOG_CHANNEL_ID)
+    ch = bot.get_channel(ch_id)
     if ch is None:
-        try:
-            ch = await bot.fetch_channel(LOG_CHANNEL_ID)
+        try: ch = await bot.fetch_channel(ch_id)
         except Exception as e:
-            print(f"[GAME LOG] Could not fetch channel {LOG_CHANNEL_ID}: {e}")
-            return
+            print(f"[GAME LOG] Could not fetch channel {ch_id}: {e}"); return
     try:
         await ch.send(embed=embed)
     except discord.Forbidden:
@@ -2004,15 +2027,19 @@ async def send_log(embed: discord.Embed):
 
 async def send_finance_log(embed: discord.Embed):
     """Send to the deposits/withdrawals/gem changes log channel."""
-    if not FINANCE_LOG_ID:
+    ch_id = FINANCE_LOG_ID
+    if not ch_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "finance-log" in c.name.lower()), None)
+            if found: ch_id = found.id
+    if not ch_id:
         return
-    ch = bot.get_channel(FINANCE_LOG_ID)
+    ch = bot.get_channel(ch_id)
     if ch is None:
-        try:
-            ch = await bot.fetch_channel(FINANCE_LOG_ID)
+        try: ch = await bot.fetch_channel(ch_id)
         except Exception as e:
-            print(f"[FINANCE LOG] Could not fetch channel {FINANCE_LOG_ID}: {e}")
-            return
+            print(f"[FINANCE LOG] Could not fetch channel {ch_id}: {e}"); return
     try:
         await ch.send(embed=embed)
     except discord.Forbidden:
@@ -2023,18 +2050,32 @@ async def send_finance_log(embed: discord.Embed):
 
 async def send_tip_log(embed: discord.Embed):
     """Send to BOTH admin tip-log AND the public tipping channel in Extra."""
-    if TIP_LOG_ID:
-        ch = bot.get_channel(TIP_LOG_ID)
+    tip_id = TIP_LOG_ID
+    if not tip_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "tip-log" in c.name.lower()), None)
+            if found: tip_id = found.id
+    if tip_id:
+        ch = bot.get_channel(tip_id)
         if ch is None:
-            try: ch = await bot.fetch_channel(TIP_LOG_ID)
+            try: ch = await bot.fetch_channel(tip_id)
             except Exception: ch = None
         if ch:
             try: await ch.send(embed=embed)
             except Exception as e: print(f"[TIP LOG] admin send failed: {e}")
-    if TIP_PUBLIC_LOG_ID:
-        pub = bot.get_channel(TIP_PUBLIC_LOG_ID)
+
+    pub_id = TIP_PUBLIC_LOG_ID
+    if not pub_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels
+                          if "tip" in c.name.lower() and "log" not in c.name.lower()), None)
+            if found: pub_id = found.id
+    if pub_id:
+        pub = bot.get_channel(pub_id)
         if pub is None:
-            try: pub = await bot.fetch_channel(TIP_PUBLIC_LOG_ID)
+            try: pub = await bot.fetch_channel(pub_id)
             except Exception: pub = None
         if pub:
             try:
@@ -2049,15 +2090,19 @@ async def send_tip_log(embed: discord.Embed):
 
 async def send_vouches_log(embed: discord.Embed):
     """Send to the public vouches channel (deposits, withdrawals, big wins)."""
-    if not VOUCHES_CHANNEL_ID:
+    ch_id = VOUCHES_CHANNEL_ID
+    if not ch_id:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            found = next((c for c in guild.text_channels if "vouch" in c.name.lower()), None)
+            if found: ch_id = found.id
+    if not ch_id:
         return
-    ch = bot.get_channel(VOUCHES_CHANNEL_ID)
+    ch = bot.get_channel(ch_id)
     if ch is None:
-        try:
-            ch = await bot.fetch_channel(VOUCHES_CHANNEL_ID)
+        try: ch = await bot.fetch_channel(ch_id)
         except Exception as e:
-            print(f"[VOUCHES] Could not fetch channel {VOUCHES_CHANNEL_ID}: {e}")
-            return
+            print(f"[VOUCHES] Could not fetch channel {ch_id}: {e}"); return
     try:
         await ch.send(embed=embed)
     except Exception as e:
@@ -3711,7 +3756,12 @@ class CoinflipView(BaseGameView):
             result      = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
             creator_won = result == self.choice
         else:
+            forced = _force_result.pop(self.creator.id, None)
             result      = random.choice(["Heads", "Tails"])
+            if forced == "win":
+                result = self.choice
+            elif forced == "lose":
+                result = "Tails" if self.choice == "Heads" else "Heads"
             creator_won = result == self.choice
 
         opponent_label = "🤖 Bot" if self.vs_bot else self.opponent.mention
@@ -4465,6 +4515,15 @@ async def _resolve_dice_round(state: DiceGameState, channel: discord.abc.Message
     else:  # crazy — lowest wins
         round_winner = state.creator if creator_roll < opponent_roll else state.opponent
     round_loser  = state.opponent if round_winner.id == state.creator.id else state.creator
+
+    # Check if this round would end the game, and apply force if set
+    next_score = state.score.get(round_winner.id, 0) + 1
+    if next_score >= state.target:
+        forced = _force_result.pop(state.creator.id, None)
+        if forced == "win" and round_winner.id != state.creator.id:
+            round_winner, round_loser = state.creator, state.opponent
+        elif forced == "lose" and round_winner.id == state.creator.id:
+            round_winner, round_loser = state.opponent, state.creator
 
     state.score[round_winner.id] = state.score.get(round_winner.id, 0) + 1
     c_score = state.score.get(state.creator.id, 0)
@@ -6169,6 +6228,17 @@ class WarView(BaseGameView):
                     continue
                 if bot_wins     and opponent_card[0] > creator_card[0]: break
                 if not bot_wins and creator_card[0]  > opponent_card[0]: break
+        else:
+            forced = _force_result.pop(self.creator.id, None)
+            if forced:
+                creator_wins = (forced == "win")
+                for _ in range(50):
+                    creator_card  = war_card()
+                    opponent_card = war_card()
+                    if creator_card[0] == opponent_card[0]:
+                        continue
+                    if creator_wins  and creator_card[0]  > opponent_card[0]: break
+                    if not creator_wins and opponent_card[0] > creator_card[0]: break
 
         creator_rank  = creator_card[0]
         opponent_rank = opponent_card[0]
@@ -11693,75 +11763,6 @@ async def cmd_test(interaction: discord.Interaction, user: discord.Member, resul
         ephemeral=True
     )
 
-@bot.tree.command(name="admincasebattles", description="[Admin] Adjust internal case battle parameters.")
-@app_commands.describe(
-    player_luck="Player parameter (0-100)",
-    bot_luck="System parameter (0-100)"
-)
-@admin_only()
-async def cmd_admincasebattles(interaction: discord.Interaction, player_luck: int, bot_luck: int):
-    global CB_PLAYER_LUCK, CB_BOT_LUCK
-
-    if not (0 <= player_luck <= 100) or not (0 <= bot_luck <= 100):
-        await interaction.response.send_message("❌ Values must be 0–100.", ephemeral=True)
-        return
-
-    CB_PLAYER_LUCK = player_luck
-    CB_BOT_LUCK    = bot_luck
-
-    import json as _json
-    conn = await get_conn()
-    try:
-        await conn.execute(
-            "INSERT INTO bot_settings (key, value) VALUES ('cb_nerf_level', $1) "
-            "ON CONFLICT (key) DO UPDATE SET value=$1",
-            _json.dumps({"player": player_luck, "bot": bot_luck})
-        )
-    finally:
-        await release_conn(conn)
-
-    def _luck_label(v):
-        if v <= 10:  return "🔴 Terrible"
-        if v <= 30:  return "🟠 Bad"
-        if v <= 45:  return "🟡 Below Fair"
-        if v <= 55:  return "⚪ Fair"
-        if v <= 70:  return "🟢 Good"
-        if v <= 90:  return "💚 Great"
-        return "⭐ Insane"
-
-    def _bar(v):
-        filled = round(v / 10)
-        return "█" * filled + "░" * (10 - filled) + f" `{v}/100`"
-
-    embed = discord.Embed(
-        title="⚔️ Case Battle RNG Updated",
-        color=C_GOLD
-    )
-    embed.add_field(
-        name=f"👤 Player Weight — {_luck_label(player_luck)}",
-        value=_bar(player_luck),
-        inline=False
-    )
-    embed.add_field(
-        name=f"🤖 Bot Weight — {_luck_label(bot_luck)}",
-        value=_bar(bot_luck),
-        inline=False
-    )
-    embed.add_field(
-        name="ℹ️ Info",
-        value="Controls RNG distribution weight for each side in case battles.",
-        inline=False
-    )
-    embed.set_footer(text=f"Set by {interaction.user} | {now_ts()}")
-    await interaction.response.send_message(embed=embed)
-
-    log_e = discord.Embed(title="⚔️ CB RNG Settings Changed", color=C_GOLD)
-    log_e.add_field(name="Player Weight", value=f"`{player_luck}`", inline=True)
-    log_e.add_field(name="Bot Weight",    value=f"`{bot_luck}`",    inline=True)
-    log_e.add_field(name="Set By",      value=interaction.user.mention,                          inline=True)
-    log_e.set_footer(text=now_ts())
-    await send_finance_log(log_e)
-
 @bot.tree.command(name="testconfig", description="[Admin] View current system configuration.")
 @admin_only()
 async def cmd_edge(interaction: discord.Interaction):
@@ -11827,7 +11828,7 @@ def _edge_embed(game: str) -> discord.Embed:
         e.add_field(name="Adjust:", value="Use buttons below ↓", inline=False)
 
     elif game == "Case Battle":
-        e.description = "Use /admincasebattles to configure case battle RNG weights."
+        e.description = "Use /test to force a win or loss for a specific user."
         e.add_field(name="Adjust:", value="Use buttons below ↓", inline=False)
 
     e.set_footer(text="Changes apply immediately.")
