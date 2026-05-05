@@ -757,21 +757,44 @@ async def get_user(conn, user_id: int):
     return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", str(user_id))
 
 async def add_wager_req(conn, user_id: int, amount: int, source: str = "reward"):
-    """Add a wager requirement equal to the reward amount. Stacks on top of existing unfulfilled requirements."""
+    """
+    Add a wager requirement for a reward.
+    - If no existing req (or already met): start fresh with new amount, wagered_so_far=0.
+    - If existing unfulfilled req: stack new amount on top, keep wagered_so_far progress
+      but cap it at the OLD required_amt so progress can't falsely satisfy the new total.
+    Always re-evaluates req_met after update.
+    """
     if amount <= 0:
         return
-    await conn.execute(
-        """INSERT INTO wager_requirements (user_id, required_amt, wagered_so_far, req_met)
-           VALUES ($1, $2, 0, FALSE)
-           ON CONFLICT (user_id) DO UPDATE SET
-               required_amt   = CASE WHEN wager_requirements.req_met THEN $2
-                                     ELSE wager_requirements.required_amt + $2 END,
-               wagered_so_far = CASE WHEN wager_requirements.req_met THEN 0
-                                     ELSE wager_requirements.wagered_so_far END,
-               req_met        = FALSE""",
-        str(user_id), amount
+    existing = await conn.fetchrow(
+        "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
+        str(user_id)
     )
-    print(f"[WAGER REQ] +{amount} for user {user_id} via {source}")
+    if existing and not existing["req_met"]:
+        # Stack on top of existing unfulfilled req
+        old_required = existing["required_amt"]
+        # Cap wagered_so_far so overshoot from a previous game doesn't instantly satisfy the stacked req
+        old_wagered  = min(existing["wagered_so_far"], old_required)
+        new_required = old_required + amount
+        new_req_met  = old_wagered >= new_required  # almost never true, but handle edge case
+        await conn.execute(
+            """UPDATE wager_requirements
+               SET required_amt=$1, wagered_so_far=$2, req_met=$3
+               WHERE user_id=$4""",
+            new_required, old_wagered, new_req_met, str(user_id)
+        )
+    else:
+        # No existing req, or already met — start fresh
+        await conn.execute(
+            """INSERT INTO wager_requirements (user_id, required_amt, wagered_so_far, req_met)
+               VALUES ($1, $2, 0, FALSE)
+               ON CONFLICT (user_id) DO UPDATE SET
+                   required_amt   = $2,
+                   wagered_so_far = 0,
+                   req_met        = FALSE""",
+            str(user_id), amount
+        )
+    print(f"[WAGER REQ] +{format_amount(amount)} for user {user_id} via {source}")
 
 async def update_balance(conn, user_id: int, delta: int):
     """Add delta to balance (use negative delta to subtract, but prefer deduct_balance_safe for that)."""
@@ -860,11 +883,13 @@ async def record_game(conn, user_id: int, won: bool, bet: int, payout: int, game
             str(user_id)
         )
         if wr_row and not wr_row["req_met"]:
-            new_wagered = wr_row["wagered_so_far"] + bet
-            req_met = new_wagered >= wr_row["required_amt"]
+            new_wagered = wr_row["wagered_so_far"] + wagered_increment
+            req_met     = new_wagered >= wr_row["required_amt"]
+            # Cap wagered_so_far at required_amt to prevent overshoot display issues
+            stored_wagered = min(new_wagered, wr_row["required_amt"]) if req_met else new_wagered
             await conn.execute(
                 "UPDATE wager_requirements SET wagered_so_far=$1, req_met=$2 WHERE user_id=$3",
-                new_wagered, req_met, str(user_id)
+                stored_wagered, req_met, str(user_id)
             )
     if game not in RAKEBACK_EXCLUDED_GAMES:
         await conn.execute(
@@ -1710,8 +1735,7 @@ async def _migrate_existing_balances():
             rows = await conn.fetch(
                 """SELECT user_id, balance FROM users
                    WHERE balance > 0
-                   AND user_id NOT IN (SELECT user_id FROM wager_requirements)
-                   AND user_id NOT IN (SELECT invitee_id FROM invite_rewards WHERE req_met = FALSE)"""
+                   AND user_id NOT IN (SELECT user_id FROM wager_requirements WHERE req_met = FALSE)"""
             )
             if not rows:
                 print("[MIGRATION] No existing users to flag for wager requirement.")
@@ -1856,7 +1880,8 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
-    """Pay invite reward when the invited user gains the Member role."""
+    """Pay invite reward when the invited user gains the Member role (staff-assigned after external verify)."""
+    # Only fire when Member role is newly added (not already had it)
     had_member = any(r.name == MEMBER_ROLE_NAME for r in before.roles)
     has_member  = any(r.name == MEMBER_ROLE_NAME for r in after.roles)
     if had_member or not has_member:
@@ -1864,55 +1889,85 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     conn = await get_conn()
     try:
+        # ── Guard 1: rejoin check ──────────────────────────────────────────────
+        # Invitee must not be a rejoin — they must NOT already exist in the member
+        # snapshot taken before this join. Rejoins are excluded from invite rewards.
+        snapshot_row = await conn.fetchrow(
+            "SELECT user_id FROM member_snapshot WHERE user_id=$1", str(after.id)
+        )
+        if snapshot_row:
+            # They were in the snapshot before this join → they're a rejoin.
+            # Update the snapshot with their current info and bail — no reward.
+            await _snapshot_member(conn, after)
+            print(f"[INVITE] {after.name} is a rejoin (in snapshot) — skipping reward")
+            return
+
+        # ── Lookup pending invite ──────────────────────────────────────────────
         pending = await conn.fetchrow(
             "SELECT inviter_id FROM pending_verifications WHERE member_id=$1",
             str(after.id)
         )
         if not pending or not pending["inviter_id"]:
+            # No pending invite tracked — snapshot and exit cleanly
+            await _snapshot_member(conn, after)
             return
 
         inviter_id = pending["inviter_id"]
 
+        # ── Guard 2: inviter must currently hold the Member role ───────────────
+        guild = after.guild
+        inviter_member = guild.get_member(int(inviter_id))
+        if inviter_member is None:
+            print(f"[INVITE] Inviter {inviter_id} is not in the guild — skipping reward")
+            await conn.execute(
+                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+            )
+            await _snapshot_member(conn, after)
+            return
+        inviter_has_member_role = any(r.name == MEMBER_ROLE_NAME for r in inviter_member.roles)
+        if not inviter_has_member_role:
+            print(f"[INVITE] Inviter {inviter_member.name} does not have the Member role — skipping reward")
+            await conn.execute(
+                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+            )
+            await _snapshot_member(conn, after)
+            return
+
+        # ── Guard 3: inviter not suspended, invitee not already rewarded ───────
         suspended = await conn.fetchrow(
             "SELECT 1 FROM suspended_invite_rewards WHERE user_id=$1", inviter_id)
         already = await conn.fetchrow(
             "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(after.id))
         if suspended or already:
-            # Clean up pending row so it does not accumulate, but skip payout
             await conn.execute(
                 "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
             )
+            await _snapshot_member(conn, after)
             return
 
-        # Enforce 60-day account age requirement
-        from datetime import timezone
+        # ── Guard 4: 60-day Discord account age on the invitee ────────────────
+        from datetime import timezone as _tz
         created = after.created_at
         if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+            created = created.replace(tzinfo=_tz.utc)
         account_age_days = (discord.utils.utcnow() - created).days
         if account_age_days < 60:
-            print(f"[INVITE] {after.name} account is only {account_age_days} days old — skipping reward")
+            print(f"[INVITE] {after.name} account is only {account_age_days}d old — skipping reward")
+            await _snapshot_member(conn, after)
             return
 
+        # ── Read reward amount ─────────────────────────────────────────────────
         setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
         reward  = int(float(setting["value"])) if setting and setting["value"] else 0
         if reward <= 0:
             print(f"[INVITE] No reward configured — set one with /setreward")
+            await _snapshot_member(conn, after)
             return
 
-        guild = after.guild
-        inviter_obj = guild.get_member(int(inviter_id))
-        if inviter_obj is None:
-            try:
-                inviter_obj = await bot.fetch_user(int(inviter_id))
-            except Exception as e:
-                print(f"[INVITE] Could not fetch inviter {inviter_id}: {e}")
-                return
-        if not inviter_obj:
-            print(f"[INVITE] Inviter {inviter_id} not found — skipping payout")
-            return
+        # inviter_member is already a guild Member at this point
+        inviter_obj = inviter_member
 
-        # All checks passed — wrap everything in a transaction so it's atomic
+        # ── All checks passed — atomic payout ─────────────────────────────────
         async with conn.transaction():
             await conn.execute(
                 "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
@@ -1928,6 +1983,9 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 str(after.id), inviter_id, now_ts(), reward
             )
 
+        # Snapshot the new member now that they're confirmed as a real first-join
+        await _snapshot_member(conn, after)
+
         print(f"[INVITE] ✅ Paid {format_amount(reward)} to {inviter_obj} — {after.name} got Member role")
 
         log_e = discord.Embed(
@@ -1940,7 +1998,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         )
         log_e.add_field(name="👤 Inviter",  value=f"{inviter_obj.mention}\n`{inviter_obj}`", inline=True)
         log_e.add_field(name="🆕 Invitee", value=f"{after.mention}\n`{after}`",              inline=True)
-        log_e.add_field(name="💎 Reward",  value=f"**{format_amount(reward)} 💎**",             inline=True)
+        log_e.add_field(name="💎 Reward",  value=f"**{format_amount(reward)} 💎**",           inline=True)
         _brand_embed(log_e)
         await send_invite_log(log_e)
 
@@ -5407,22 +5465,20 @@ class BlackjackView(BaseGameView):
 
         embed = discord.Embed(
             color=C_GOLD,
+            title="🃏 Blackjack",
             description=(
-                f"## ♠️  BLACKJACK\n"
-                f"╔══════════════════════╗\n"
-                f"║  Wager  {format_amount(total_bet):>14}  ║\n"
-                f"║  Max    {format_amount(potential):>14}  ║\n"
-                f"╚══════════════════════╝"
+                f"Bet: **{format_amount(total_bet)}** 💎\n"
+                f"Potential Winnings: **{format_amount(potential)}** 💎"
             )
         )
         embed.add_field(
             name="Your Hand:",
-            value=f"{player_cards}\nPlayer's Card Value: {pt}",
+            value=f"{player_cards}\nPlayer's Card Value: **{pt}**",
             inline=False
         )
         embed.add_field(
             name="Dealer's Hand:",
-            value=f"{dealer_cards}\nDealer's Card Value: {dlabel}",
+            value=f"{dealer_cards}\nDealer's Card Value: **{dlabel}**",
             inline=False
         )
         _brand_embed(embed)
@@ -5498,10 +5554,11 @@ class BlackjackView(BaseGameView):
         win_title = "YOU WIN" if won else ("PUSH" if is_push else "YOU LOSE")
         embed = discord.Embed(
             color=color,
-            title=f"🃏  Blackjack — {result}",
+            title=f"🃏 Blackjack — {result}",
             description=(
-                f"# {win_icon}  {win_title}  {win_icon}\n\n"
-                f"**Bet:** {format_amount(total_bet)} 💎"
+                f"Bet: **{format_amount(total_bet)}** 💎\n"
+                f"{'Payout' if won else 'Result'}: **{format_amount(payout)}** 💎\n"
+                f"**{win_icon} {win_title}** (`{net_str}` 💎)"
             )
         )
         embed.add_field(
@@ -5514,9 +5571,6 @@ class BlackjackView(BaseGameView):
             value=f"{bj_str(self.dealer_hand)}\nDealer's Card Value: **{dt}**",
             inline=False
         )
-        net_str2 = f"+{format_amount(payout - total_bet)}" if won else (f"-{format_amount(total_bet)}" if not is_push else "±0")
-        embed.add_field(name="Result", value=f"`{net_str2}` 💎", inline=True)
-        embed.add_field(name="Payout", value=f"`{format_amount(payout)}` 💎", inline=True)
         _brand_embed(embed)
 
         try:
@@ -5605,7 +5659,7 @@ class BlackjackView(BaseGameView):
             except Exception as e:
                 print(f'[BJ HIT UPDATE FAILED] {e}')
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, emoji="✋")
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.success, emoji="✋")
     async def stand_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -5613,7 +5667,7 @@ class BlackjackView(BaseGameView):
         await interaction.response.defer()
         await self._end_game(interaction)
 
-    @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple, emoji="✖️")
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger, emoji="💰")
     async def double_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -5744,12 +5798,17 @@ async def cmd_blackjack(interaction: discord.Interaction, bet: str):
 
         _net_bj = payout - total_bet
         _net_str_bj = f"+{format_amount(_net_bj)}" if _net_bj > 0 else (f"-{format_amount(abs(_net_bj))}" if _net_bj < 0 else "±0")
-        bj_embed = discord.Embed(color=color, description=f"## ♠️  BJ — {result}")
-        bj_embed.add_field(name=f"🃏 Your Hand ({pt})",   value=f"`{bj_str(ph)}`", inline=False)
-        bj_embed.add_field(name=f"🎴 Dealer Hand ({dt})", value=f"`{bj_str(dh)}`", inline=False)
-        bj_embed.add_field(name="💰 Bet",    value=f"**{format_amount(total_bet)} 💎**", inline=True)
-        bj_embed.add_field(name="🎁 Payout", value=f"**{format_amount(payout)} 💎**",   inline=True)
-        bj_embed.add_field(name="📈 Net",    value=f"**{_net_str_bj}**",             inline=True)
+        bj_embed = discord.Embed(
+            color=color,
+            title=f"🃏 Blackjack — {result}",
+            description=(
+                f"Bet: **{format_amount(total_bet)}** 💎\n"
+                f"Payout: **{format_amount(payout)}** 💎\n"
+                f"{'🏆 **YOU WIN**' if won else '🔁 **PUSH**'} (`{_net_str_bj}` 💎)"
+            )
+        )
+        bj_embed.add_field(name="Your Hand:", value=f"{bj_str(ph)}\nPlayer's Card Value: **{pt}**", inline=False)
+        bj_embed.add_field(name="Dealer's Hand:", value=f"{bj_str(dh)}\nDealer's Card Value: **{dt}**", inline=False)
         bj_embed.set_thumbnail(url=await get_avatar(interaction.user))
 
         conn = await get_conn()
@@ -5810,11 +5869,17 @@ class BlackjackDiceView(BaseGameView):
         total_bet = self.bet + self.extra_bet
         player_bj = bjd_is_blackjack(self.player_dice) and self.extra_bet == 0
         potential = int(total_bet * 2.5) if player_bj else total_bet * 2
-        embed = discord.Embed(color=C_GOLD, description="## ⬛  BLACKJACK DICE")
-        embed.add_field(name=f"Your Dice ({pt})",    value=bjd_str(self.player_dice),              inline=False)
-        embed.add_field(name=f"Dealer Dice ({dlabel})", value=bjd_str(self.dealer_dice, hide_dealer), inline=False)
-        embed.add_field(name="Bet",                  value=f"{format_amount(total_bet)} 💎",       inline=True)
-        embed.add_field(name="Potential Payout",     value=f"{format_amount(potential)} 💎",       inline=True)
+        embed = discord.Embed(
+            color=C_GOLD,
+            title="🎲 Blackjack Dice",
+            description=(
+                f"Bet: **{format_amount(total_bet)}** 💎\n"
+                f"Potential Winnings: **{format_amount(potential)}** 💎"
+            )
+        )
+        embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: **{pt}**", inline=False)
+        embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice, hide_dealer)}\nDealer's Card Value: **{dlabel}**", inline=False)
+        _brand_embed(embed)
         return embed
 
     async def _deduct_initial_bet(self) -> bool:
@@ -5875,18 +5940,23 @@ class BlackjackDiceView(BaseGameView):
         is_push = (payout == total_bet and pt == dt)
         won     = payout > total_bet
 
+        net     = payout - total_bet
+        net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
+        win_icon  = "🏆" if won else ("🔁" if is_push else "💀")
+        win_title = "YOU WIN" if won else ("PUSH" if is_push else "YOU LOSE")
         bj_embed = discord.Embed(
             color=color,
+            title=f"🎲 Blackjack Dice — {result}",
             description=(
-                f"## ⬛  BJ DICE — {result}\n"
-                f"```\n"
-                f"  You    {bjd_str(self.player_dice):>20}  ({pt})\n"
-                f"  Dealer {bjd_str(self.dealer_dice):>20}  ({dt})\n"
-                f"```\n"
-                f"{result_desc(won, is_push, total_bet, payout)}"
+                f"Bet: **{format_amount(total_bet)}** 💎\n"
+                f"{'Payout' if won else 'Result'}: **{format_amount(payout)}** 💎\n"
+                f"**{win_icon} {win_title}** (`{net_str}` 💎)"
             )
         )
+        bj_embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: **{pt}**", inline=False)
+        bj_embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice)}\nDealer's Card Value: **{dt}**", inline=False)
         bj_embed.set_thumbnail(url=await get_avatar(self.creator))
+        _brand_embed(bj_embed)
 
         try:
             conn = await get_conn()
@@ -5989,7 +6059,7 @@ class BlackjackDiceView(BaseGameView):
             except Exception as e:
                 print(f'[BJDICE HIT UPDATE FAILED] {e}')
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.danger, emoji="✋")
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.success, emoji="✋")
     async def stand_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -5997,7 +6067,7 @@ class BlackjackDiceView(BaseGameView):
         await interaction.response.defer()
         await self._end_game(interaction)
 
-    @discord.ui.button(label="Double", style=discord.ButtonStyle.blurple, emoji="✖️")
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger, emoji="💰")
     async def double_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -7493,9 +7563,21 @@ class MinesView(BaseGameView):
         for i in range(MINES_GRID_SIZE):
             row_num     = i // 5
             is_revealed = i in self.revealed
+            is_bomb     = self.done and self.grid[i] == "bomb"
+
+            if is_revealed:
+                label = "💎"
+                style = discord.ButtonStyle.success
+            elif is_bomb:
+                label = "💣"
+                style = discord.ButtonStyle.danger
+            else:
+                label = "\u200b"
+                style = discord.ButtonStyle.secondary
+
             btn = discord.ui.Button(
-                label="💎" if is_revealed else "\​",
-                style=discord.ButtonStyle.success if is_revealed else discord.ButtonStyle.secondary,
+                label=label,
+                style=style,
                 custom_id=f"mine_{i}",
                 row=row_num,
                 disabled=self.done
@@ -7518,45 +7600,45 @@ class MinesView(BaseGameView):
         gems_total = MINES_GRID_SIZE - self.mines
         colors     = {"playing": C_BLUE, "win": C_WIN, "loss": C_LOSS, "cleared": 0xFFD700}
         color      = colors.get(outcome, C_BLUE)
-        game_over  = outcome in ("win", "loss", "cleared")
         payout     = self.current_winnings
         profit     = payout - self.bet
         profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
-        grid_str   = mines_render_grid(self.grid, self.revealed, game_over=game_over)
 
         if outcome == "loss":
-            stats = (
-                f"## 💥  MINES — BOOM!\n"
-                f"┌─────────────────────────┐\n"
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"💣 **Mines** — {self.mines}\n"
-                f"💎 **Found** — {self.gems_found}/{gems_total}\n"
-                f"❌ **Lost** — {format_amount(self.bet)} 💎"
+            desc = (
+                f"💸 **Lost:** {format_amount(self.bet)} 💎\n"
+                f"💎 **Found:** {self.gems_found}\n"
+                f"💣 **Mines:** {self.mines}"
             )
+            embed = discord.Embed(title="💥 You Hit a Bomb!", description=desc, color=color)
         elif outcome in ("win", "cleared"):
-            title_line = "## 🎉  VICTORY!" if outcome == "win" else "## 🏆  ALL CLEAR!"
-            stats = (
-                f"{title_line}\n"
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                f"✨ **Profit** — {profit_str} 💎\n"
-                f"💎 **Gems Found** — {self.gems_found}/{gems_total}"
+            title = "💰 Cashed Out!" if outcome == "win" else "🏆 Board Cleared!"
+            desc = (
+                f"📊 **Multiplier:** {self.current_mult:.2f}x\n"
+                f"💸 **Won:** {format_amount(payout)} 💎\n"
+                f"✨ **Profit:** {profit_str} 💎\n"
+                f"💎 **Gems Found:** {self.gems_found}/{gems_total}"
             )
+            embed = discord.Embed(title=title, description=desc, color=color)
         else:
-            next_mult   = mines_calc_mult(self.mines, self.gems_found + 1)
-            cashout_tip = "\n💡 *Tap any revealed 💎 to cash out*" if self.gems_found > 0 else ""
-            stats = (
-                f"## 💣  MINES\n"
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                f"💵 **Cashout now** — {format_amount(payout)} 💎\n"
-                f"➡️ **Next gem** — {next_mult:.2f}x\n"
-                f"💎 **Found** — {self.gems_found}/{gems_total}{cashout_tip}"
+            next_mult = mines_calc_mult(self.mines, self.gems_found + 1)
+            safe_left = gems_total - self.gems_found
+            unrevealed = MINES_GRID_SIZE - self.gems_found
+            chance = round((safe_left / unrevealed) * 100, 1) if unrevealed > 0 else 0.0
+            cashout_tip = "\n💡 *Click any 💎 tile to cash out*" if self.gems_found > 0 else ""
+            desc = (
+                f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
+                f"📊 **Multiplier:** {self.current_mult:.2f}x\n"
+                f"💵 **Payout:** {format_amount(payout)} 💎\n"
+                f"🎯 **Next:** {format_amount(int(self.bet * next_mult))} ({chance}%)\n"
+                f"\n💣 **{self.mines} Bombs**{cashout_tip}"
             )
+            embed = discord.Embed(title="💎 MINES", description=desc, color=color)
 
-        embed = discord.Embed(color=color, description=f"{stats}\n\n{grid_str}")
-        embed.set_footer(text=f"💣 {self.mines} Mines  •  {'Game Ended' if game_over else 'Pick a tile!'}")
+        _brand_embed(embed)
         return embed
+
+
     async def _deduct_bet(self) -> bool:
         if self.bet_deducted:
             return True
@@ -7607,7 +7689,7 @@ class MinesView(BaseGameView):
                 finally:
                     await release_conn(conn)
                 try:
-                    await interaction.edit_original_response(embed=self.game_embed("loss"), view=None)
+                    await interaction.edit_original_response(embed=self.game_embed("loss"), view=self)
                 except Exception as _result_err:
                     print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
                 log_e = discord.Embed(title="💣 Mines Result", color=C_LOSS)
@@ -7658,8 +7740,9 @@ class MinesView(BaseGameView):
                                 await update_user_rank(member, row["wagered"])
                     finally:
                         await release_conn(conn)
+                    self._build_buttons()
                     try:
-                        await interaction.edit_original_response(embed=self.game_embed("cleared"), view=None)
+                        await interaction.edit_original_response(embed=self.game_embed("cleared"), view=self)
                     except Exception as _result_err:
                         print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
                     log_e = discord.Embed(title="💣 Mines Result", color=C_VIP)
@@ -7709,8 +7792,9 @@ class MinesView(BaseGameView):
                     asyncio.create_task(check_vip_balance(interaction.user.id if hasattr(interaction, 'user') else self.creator.id, interaction.guild if hasattr(interaction, 'guild') else None))
             finally:
                 await release_conn(conn)
+            self._build_buttons()
             try:
-                await interaction.edit_original_response(embed=self.game_embed("win"), view=None)
+                await interaction.edit_original_response(embed=self.game_embed("win"), view=self)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
             log_e = discord.Embed(title="💣 Mines Result", color=C_WIN)
@@ -10344,13 +10428,20 @@ async def cmd_withdraw(interaction: discord.Interaction):
             str(interaction.user.id)
         )
         if wr_row and not wr_row["req_met"]:
-            remaining = wr_row["required_amt"] - wr_row["wagered_so_far"]
-            await interaction.followup.send(
-                f"❌ You have a pending wager requirement of **{format_amount(remaining)} 💎** before you can withdraw.\n"
-                f"Progress: **{format_amount(wr_row['wagered_so_far'])} / {format_amount(wr_row['required_amt'])}**",
-                ephemeral=True
-            )
-            return
+            # Self-heal: if wagered_so_far already meets or exceeds required_amt, mark it done
+            if wr_row["wagered_so_far"] >= wr_row["required_amt"]:
+                await conn.execute(
+                    "UPDATE wager_requirements SET req_met=TRUE WHERE user_id=$1",
+                    str(interaction.user.id)
+                )
+            else:
+                remaining = max(0, wr_row["required_amt"] - wr_row["wagered_so_far"])
+                await interaction.followup.send(
+                    f"❌ You have a pending wager requirement of **{format_amount(remaining)} 💎** before you can withdraw.\n"
+                    f"Progress: **{format_amount(wr_row['wagered_so_far'])} / {format_amount(wr_row['required_amt'])}**",
+                    ephemeral=True
+                )
+                return
 
         if bal < total_cost:
             needed_usd = total_cost / COINS_PER_DOLLAR
@@ -10548,6 +10639,35 @@ async def cmd_withdraw(interaction: discord.Interaction):
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
+class StockView(discord.ui.View):
+    """Paginated view for /stock — shows Prev/Next buttons when there are >10 items."""
+    def __init__(self, rows, page: int = 0, page_size: int = 10):
+        super().__init__(timeout=60)
+        self.rows        = rows
+        self.page        = page
+        self.page_size   = page_size
+        self.total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.prev_btn.disabled = self.page <= 0
+        self.next_btn.disabled = self.page >= self.total_pages - 1
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary, custom_id="stock_prev")
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        self._update_buttons()
+        embed = await _stock_embed(self.rows, self.page, self.page_size)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="stock_next")
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        self._update_buttons()
+        embed = await _stock_embed(self.rows, self.page, self.page_size)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 @bot.tree.command(name="stock", description="View all items in the shop available for withdrawal.")
 async def cmd_stock(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -10556,8 +10676,9 @@ async def cmd_stock(interaction: discord.Interaction):
         rows = await _get_stock(conn)
     finally:
         await release_conn(conn)
-    embed = await _stock_embed(rows)
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    embed = await _stock_embed(rows, page=0)
+    view  = StockView(rows, page=0) if len(rows) > 10 else None
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="addstock", description="[Admin] Add an item to the stock shop.")
 @app_commands.describe(
@@ -10844,17 +10965,8 @@ async def cmd_addcoins(interaction: discord.Interaction, user: discord.Member, a
                 "UPDATE admin_balances SET used = used + $1, last_updated = $2 WHERE admin_id = $3",
                 amt, now_ts(), str(interaction.user.id)
             )
-        await conn.execute(
-            """INSERT INTO wager_requirements (user_id, required_amt, wagered_so_far, req_met)
-               VALUES ($1, $2, 0, FALSE)
-               ON CONFLICT (user_id) DO UPDATE SET
-                   required_amt   = CASE WHEN wager_requirements.req_met THEN $2
-                                         ELSE wager_requirements.required_amt + $2 END,
-                   wagered_so_far = CASE WHEN wager_requirements.req_met THEN 0
-                                         ELSE wager_requirements.wagered_so_far END,
-                   req_met        = FALSE""",
-            str(user.id), amt
-        )
+        # Deposit requires wagering the deposited amount before withdrawal
+        await add_wager_req(conn, user.id, amt, "deposit")
         row = await get_user(conn, user.id)
         if row and interaction.guild:
             member = interaction.guild.get_member(user.id)
@@ -12038,31 +12150,15 @@ async def cmd_addwager(interaction: discord.Interaction, user: discord.Member, a
     conn = await get_conn()
     try:
         await ensure_user(conn, user)
+        # Read current state before adding so we can show accurate before/after
         row = await conn.fetchrow(
             "SELECT required_amt, wagered_so_far, req_met FROM wager_requirements WHERE user_id=$1",
             str(user.id)
         )
-        if row and not row["req_met"]:
-            new_required = row["required_amt"] + amt
-            await conn.execute(
-                "UPDATE wager_requirements SET required_amt=$1, req_met=FALSE WHERE user_id=$2",
-                new_required, str(user.id)
-            )
-            already = row["wagered_so_far"]
-            total_required = new_required
-        else:
-            await conn.execute(
-                """INSERT INTO wager_requirements (user_id, required_amt, wagered_so_far, req_met)
-                   VALUES ($1, $2, 0, FALSE)
-                   ON CONFLICT (user_id) DO UPDATE SET
-                       required_amt   = $2,
-                       wagered_so_far = 0,
-                       req_met        = FALSE""",
-                str(user.id), amt
-            )
-            already = 0
-            total_required = amt
-
+        already       = row["wagered_so_far"] if (row and not row["req_met"]) else 0
+        old_required  = row["required_amt"]   if (row and not row["req_met"]) else 0
+        await add_wager_req(conn, user.id, amt, f"manual by {interaction.user.name}")
+        total_required = old_required + amt if (row and not row["req_met"]) else amt
         await log_transaction(conn, user.id, "wager_requirement_added", amt, f"set by {interaction.user.name}")
     finally:
         await release_conn(conn)
@@ -12107,6 +12203,23 @@ async def cmd_checkwager(interaction: discord.Interaction, user: discord.Member)
 
     required = row["required_amt"]
     wagered  = row["wagered_so_far"]
+
+    # Self-heal: if wagered already meets required but flag wasn't set, fix it
+    if wagered >= required:
+        conn2 = await get_conn()
+        try:
+            await conn2.execute(
+                "UPDATE wager_requirements SET req_met=TRUE WHERE user_id=$1", str(user.id)
+            )
+        finally:
+            await release_conn(conn2)
+        embed = discord.Embed(
+            title="✅ No Active Wager Requirement",
+            description=f"{user.mention} has met their wager requirement — flag corrected.",
+            color=C_WIN
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
     remaining = max(0, required - wagered)
     pct = min(100, int(wagered / required * 100)) if required else 100
     bar = progress_bar(wagered, required)
