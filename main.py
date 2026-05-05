@@ -10091,13 +10091,7 @@ async def cmd_deposit(interaction: discord.Interaction):
     guild = bot.get_guild(GUILD_ID)
     deposits_cat = None
     if guild:
-        # 1. Use admin-configured category ID
-        if DEPOSIT_CATEGORY_ID:
-            deposits_cat = guild.get_channel(DEPOSIT_CATEGORY_ID)
-        # 2. Fall back to category named "Deposits"
-        if not deposits_cat:
-            deposits_cat = discord.utils.get(guild.categories, name="Deposits")
-        # 3. Fall back to category of any existing deposit channel
+        deposits_cat = discord.utils.get(guild.categories, name="Deposits")
         if not deposits_cat:
             ch = discord.utils.find(
                 lambda c: "deposit" in c.name.lower() and isinstance(c, discord.TextChannel),
@@ -10321,13 +10315,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
     thread = None
     withdraws_cat = None
     if guild:
-        # 1. Use admin-configured category ID
-        if WITHDRAW_CATEGORY_ID:
-            withdraws_cat = guild.get_channel(WITHDRAW_CATEGORY_ID)
-        # 2. Fall back to category named "Withdraws"
-        if not withdraws_cat:
-            withdraws_cat = discord.utils.get(guild.categories, name="Withdraws")
-        # 3. Fall back to category of any existing withdraw channel
+        withdraws_cat = discord.utils.get(guild.categories, name="Withdraws")
         if not withdraws_cat:
             ch = discord.utils.find(
                 lambda c: "withdraw" in c.name.lower() and isinstance(c, discord.TextChannel),
