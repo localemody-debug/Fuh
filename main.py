@@ -39,17 +39,37 @@ CASE_BATTLE_LOG_ID   = 0   # case-battles channel
 CASE_BATTLE_CHANNEL_ID = 0  # case-battles channel (same, set by auto-setup)
 
 async def _load_channel_ids():
-    """Load channel IDs saved by /setup from the DB into globals."""
+    """Auto-detect all log channel IDs by name from the guild, then fill any gaps from DB overrides."""
     global LOG_CHANNEL_ID, FINANCE_LOG_ID, INVITE_LOG_ID, REWARD_LOG_ID, TIP_LOG_ID, TIP_PUBLIC_LOG_ID
     global CASE_BATTLE_LOG_ID, VOUCHES_CHANNEL_ID, CASE_BATTLE_CHANNEL_ID
+
+    # --- 1. Auto-detect by channel name (works the moment _auto_create_channels runs) ---
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        def find_ch(fragment):
+            """Return the first text channel whose name contains fragment (case-insensitive)."""
+            return next((c for c in guild.text_channels if fragment in c.name.lower()), None)
+
+        ch = find_ch("game-log");    LOG_CHANNEL_ID    = ch.id if ch else LOG_CHANNEL_ID
+        ch = find_ch("finance-log"); FINANCE_LOG_ID    = ch.id if ch else FINANCE_LOG_ID
+        ch = find_ch("invite-log");  INVITE_LOG_ID     = ch.id if ch else INVITE_LOG_ID
+        ch = find_ch("reward-log");  REWARD_LOG_ID     = ch.id if ch else REWARD_LOG_ID
+        ch = find_ch("tip-log");     TIP_LOG_ID        = ch.id if ch else TIP_LOG_ID
+        ch = find_ch("tip");         TIP_PUBLIC_LOG_ID = ch.id if ch else TIP_PUBLIC_LOG_ID
+        ch = find_ch("vouch");       VOUCHES_CHANNEL_ID = ch.id if ch else VOUCHES_CHANNEL_ID
+        ch = find_ch("case-battle"); CASE_BATTLE_LOG_ID = CASE_BATTLE_CHANNEL_ID = ch.id if ch else CASE_BATTLE_LOG_ID
+
+    # --- 2. DB overrides (admin /set* commands still win if explicitly configured) ---
     try:
         conn = await get_conn()
         try:
             rows = await conn.fetch("SELECT key, value FROM bot_settings WHERE key LIKE 'channel_%'")
             for r in rows:
                 val = int(r["value"]) if r["value"].isdigit() else 0
+                if not val:
+                    continue
                 if r["key"] == "channel_game_log":        LOG_CHANNEL_ID     = val
-                elif r["key"] == "channel_vouches":        VOUCHES_CHANNEL_ID = val
+                elif r["key"] == "channel_vouches":       VOUCHES_CHANNEL_ID = val
                 elif r["key"] == "channel_finance_log":   FINANCE_LOG_ID     = val
                 elif r["key"] == "channel_invite_log":    INVITE_LOG_ID      = val
                 elif r["key"] == "channel_reward_log":    REWARD_LOG_ID      = val
@@ -60,9 +80,12 @@ async def _load_channel_ids():
                     CASE_BATTLE_CHANNEL_ID = val
         finally:
             await release_conn(conn)
-        print(f"[BOT] Channel IDs loaded from DB")
     except Exception as e:
-        print(f"[BOT] Could not load channel IDs: {e}")
+        print(f"[BOT] Could not load channel ID overrides from DB: {e}")
+
+    print(f"[BOT] Channel IDs loaded — finance={FINANCE_LOG_ID} game={LOG_CHANNEL_ID} "
+          f"invite={INVITE_LOG_ID} reward={REWARD_LOG_ID} tip={TIP_LOG_ID} vouches={VOUCHES_CHANNEL_ID}")
+
 ADMIN_ROLE_NAME      = "Admin"
 STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
@@ -1596,6 +1619,8 @@ async def _setup_guild_channels(guild: discord.Guild):
             ("🎁｜reward-log",   "Rain/promo/daily/boost log.",staff_only_ow(admin_role, mod_role, tmod_role), False),
             ("💸｜tip-log",      "Admin tip log.",             staff_only_ow(admin_role, mod_role),            False),
         ]),
+        ("Deposits",  staff_only_ow(admin_role, mod_role, tmod_role), []),
+        ("Withdraws", staff_only_ow(admin_role, mod_role, tmod_role), []),
     ]
 
     existing_categories = {c.name: c for c in guild.categories}
@@ -10064,21 +10089,27 @@ async def cmd_deposit(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     guild = bot.get_guild(GUILD_ID)
-    ticket_ch = None
+    deposits_cat = None
     if guild:
-        deposits_cat = discord.utils.get(guild.categories, name="Deposits")
-        if deposits_cat:
-            ticket_ch = discord.utils.get(guild.text_channels, category=deposits_cat)
-        if not ticket_ch:
-            ticket_ch = discord.utils.find(
+        # 1. Use admin-configured category ID
+        if DEPOSIT_CATEGORY_ID:
+            deposits_cat = guild.get_channel(DEPOSIT_CATEGORY_ID)
+        # 2. Fall back to category named "Deposits"
+        if not deposits_cat:
+            deposits_cat = discord.utils.get(guild.categories, name="Deposits")
+        # 3. Fall back to category of any existing deposit channel
+        if not deposits_cat:
+            ch = discord.utils.find(
                 lambda c: "deposit" in c.name.lower() and isinstance(c, discord.TextChannel),
                 guild.channels
             )
+            if ch:
+                deposits_cat = ch.category
 
     ticket_id = f"{int(discord.utils.time_snowflake(discord.utils.utcnow()) & 0xFFFF):04X}"
     ticket_channel = None
 
-    if ticket_ch and guild:
+    if guild:
         try:
             staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
             admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
@@ -10098,7 +10129,7 @@ async def cmd_deposit(interaction: discord.Interaction):
 
             ticket_channel = await guild.create_text_channel(
                 name=f"deposit-{interaction.user.name}-{ticket_id}",
-                category=deposits_cat or ticket_ch.category,
+                category=deposits_cat,   # None = guild root (always works)
                 overwrites=overwrites,
                 reason=f"Deposit ticket for {interaction.user}"
             )
@@ -10288,17 +10319,23 @@ async def cmd_withdraw(interaction: discord.Interaction):
 
     guild = bot.get_guild(GUILD_ID)
     thread = None
-    ticket_ch = None
+    withdraws_cat = None
     if guild:
-        withdraws_cat = discord.utils.get(guild.categories, name="Withdraws")
-        if withdraws_cat:
-            ticket_ch = discord.utils.get(guild.text_channels, category=withdraws_cat)
-        if not ticket_ch:
-            ticket_ch = discord.utils.find(
+        # 1. Use admin-configured category ID
+        if WITHDRAW_CATEGORY_ID:
+            withdraws_cat = guild.get_channel(WITHDRAW_CATEGORY_ID)
+        # 2. Fall back to category named "Withdraws"
+        if not withdraws_cat:
+            withdraws_cat = discord.utils.get(guild.categories, name="Withdraws")
+        # 3. Fall back to category of any existing withdraw channel
+        if not withdraws_cat:
+            ch = discord.utils.find(
                 lambda c: "withdraw" in c.name.lower() and isinstance(c, discord.TextChannel),
                 guild.channels
             )
-    if ticket_ch and guild:
+            if ch:
+                withdraws_cat = ch.category
+    if guild:
         try:
             staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
             admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
@@ -10311,7 +10348,7 @@ async def cmd_withdraw(interaction: discord.Interaction):
             # Withdraw tickets: ONLY Owner can access
             if owner_role: overwrites[owner_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-            target_category = ticket_ch.category
+            target_category = withdraws_cat  # None = guild root (always works)
 
             thread = await guild.create_text_channel(
                 name=f"withdraw-{interaction.user.name}",
