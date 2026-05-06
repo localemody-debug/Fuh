@@ -95,7 +95,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.535  # 53.5/46.5 edge across all games
+BOT_HOUSE_WIN        = 0.52   # 52/48 edge across all games
 BJ_DEALER_STAND      = 18    # Dealer stands at this total — 18 gives ~7% house edge
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -121,11 +121,11 @@ UNVERIFIED_ROLE_NAME = "Unverified"      # Auto-assigned to everyone on join
 BOT_ROLE_NAME        = "bloxysab"        # Top-level bot management role — sits above all casino roles
 VERIFIED_ROLE_NAME   = "Verified"       # Auto-created verified role
 
-CARD_EMOJIS = {
-    1: "🎲", 2: "⚽", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣",
-    6: "6️⃣", 7: "🔥", 8: "8️⃣", 9: "9️⃣", 10: "🔟",
-    11: "👑", 12: "👸", 13: "🤴",
+CARD_RANK_LABELS = {
+    1: "A", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7",
+    8: "8", 9: "9", 10: "10", 11: "J", 12: "Q", 13: "K",
 }
+BJ_SUITS = ["♠", "♥", "♦", "♣"]
 
 DICE_EMOJIS = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
 
@@ -1318,6 +1318,8 @@ async def update_dynamic_ranks():
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.invites = True   # required for on_invite_create/delete and guild.invites()
+intents.guilds  = True   # required for guild membership and role events
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -1420,7 +1422,7 @@ async def on_ready():
             print(f"[BOT] Role setup error for {guild.name}: {e}")
         try:
             invites = await guild.invites()
-            _invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+            _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
         except Exception as e:
             print(f"[INVITE] Could not cache invites for {guild.name}: {e}")
     print(f"[INVITE] Cached invites for {len(bot.guilds)} guild(s)")
@@ -1797,16 +1799,7 @@ async def on_invite_delete(invite: discord.Invite):
 @bot.event
 async def on_member_join(member: discord.Member):
     asyncio.create_task(on_member_join_raid_check(member))
-    if not member.bot:
-        conn = await get_conn()
-        try:
-            await _ensure_member_snapshot_table(conn)
-            await _snapshot_member(conn, member)
-        except Exception:
-            pass
-        finally:
-            await release_conn(conn)
-    guild = member.guild
+    guild = member.guild  # snapshot only happens AFTER reward is paid or rejoin confirmed
 
     conn = await get_conn()
     try:
@@ -1889,19 +1882,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     conn = await get_conn()
     try:
-        # ── Guard 1: rejoin check ──────────────────────────────────────────────
-        # Invitee must not be a rejoin — they must NOT already exist in the member
-        # snapshot taken before this join. Rejoins are excluded from invite rewards.
-        snapshot_row = await conn.fetchrow(
-            "SELECT user_id FROM member_snapshot WHERE user_id=$1", str(after.id)
-        )
-        if snapshot_row:
-            # They were in the snapshot before this join → they're a rejoin.
-            # Update the snapshot with their current info and bail — no reward.
-            await _snapshot_member(conn, after)
-            print(f"[INVITE] {after.name} is a rejoin (in snapshot) — skipping reward")
-            return
-
         # ── Lookup pending invite ──────────────────────────────────────────────
         pending = await conn.fetchrow(
             "SELECT inviter_id FROM pending_verifications WHERE member_id=$1",
@@ -1918,20 +1898,23 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         guild = after.guild
         inviter_member = guild.get_member(int(inviter_id))
         if inviter_member is None:
-            print(f"[INVITE] Inviter {inviter_id} is not in the guild — skipping reward")
-            await conn.execute(
-                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-            )
-            await _snapshot_member(conn, after)
-            return
-        inviter_has_member_role = any(r.name == MEMBER_ROLE_NAME for r in inviter_member.roles)
-        if not inviter_has_member_role:
-            print(f"[INVITE] Inviter {inviter_member.name} does not have the Member role — skipping reward")
-            await conn.execute(
-                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-            )
-            await _snapshot_member(conn, after)
-            return
+            try:
+                inviter_member = await guild.fetch_member(int(inviter_id))
+            except discord.NotFound:
+                print(f"[INVITE] Inviter {inviter_id} is not in the guild — skipping reward")
+                await conn.execute(
+                    "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+                )
+                await _snapshot_member(conn, after)
+                return
+            except Exception as _fe:
+                print(f"[INVITE] Could not fetch inviter {inviter_id}: {_fe} — skipping reward")
+                await conn.execute(
+                    "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
+                )
+                await _snapshot_member(conn, after)
+                return
+        # Guard 2 note: inviter does not need the Member role — staff/owners can invite too
 
         # ── Guard 3: inviter not suspended, invitee not already rewarded ───────
         suspended = await conn.fetchrow(
@@ -1953,15 +1936,15 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         account_age_days = (discord.utils.utcnow() - created).days
         if account_age_days < 60:
             print(f"[INVITE] {after.name} account is only {account_age_days}d old — skipping reward")
-            await _snapshot_member(conn, after)
+            await conn.execute("DELETE FROM pending_verifications WHERE member_id=$1", str(after.id))
             return
 
         # ── Read reward amount ─────────────────────────────────────────────────
         setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
         reward  = int(float(setting["value"])) if setting and setting["value"] else 0
         if reward <= 0:
-            print(f"[INVITE] No reward configured — set one with /setreward")
-            await _snapshot_member(conn, after)
+            print(f"[INVITE] No reward configured — pending row kept for {after.name}, set reward with /setreward")
+            # Keep pending row intact — admin can manually grant later if needed
             return
 
         # inviter_member is already a guild Member at this point
@@ -5416,25 +5399,31 @@ async def cmd_baccarat(interaction: discord.Interaction, bet: str):
     view._original_message = await interaction.original_response()
 
 def build_deck():
-    deck = list(range(1, 14)) * 4
+    deck = [(rank, suit) for suit in BJ_SUITS for rank in range(1, 14)]
+    deck *= 1  # single deck
     random.shuffle(deck)
     return deck
 
-def bj_val(rank: int) -> int:
+def bj_val(card) -> int:
+    rank = card[0] if isinstance(card, tuple) else card
     return 10 if rank > 10 else rank
 
 def bj_total(hand) -> int:
     total = sum(bj_val(c) for c in hand)
-    aces  = hand.count(1)
+    aces  = sum(1 for c in hand if (c[0] if isinstance(c, tuple) else c) == 1)
     while aces > 0 and total + 10 <= 21:
         total += 10
         aces  -= 1
     return total
 
+def bj_card_str(card) -> str:
+    rank, suit = card if isinstance(card, tuple) else (card, "♠")
+    return f"`{CARD_RANK_LABELS[rank]}{suit}`"
+
 def bj_str(hand, hide_second=False) -> str:
     if hide_second and len(hand) >= 2:
-        return f"{CARD_EMOJIS[hand[0]]} 🂠"
-    return " ".join(CARD_EMOJIS[c] for c in hand)
+        return f"{bj_card_str(hand[0])} `?`"
+    return "  ".join(bj_card_str(c) for c in hand)
 
 def is_blackjack(hand) -> bool:
     return len(hand) == 2 and bj_total(hand) == 21
@@ -5599,6 +5588,48 @@ class BlackjackView(BaseGameView):
         except Exception as e:
             print(f'[BJ RESULT FAILED] {e}')
 
+        # ── Random gem drop to random members on BJ win ──────────────────────
+        if won:
+            try:
+                _bj_guild = interaction.guild or bot.get_guild(GUILD_ID)
+                if _bj_guild:
+                    _eligible = [
+                        m for m in _bj_guild.members
+                        if not m.bot and m.id != self.creator.id
+                    ]
+                    if _eligible:
+                        _drop_count  = random.randint(1, min(3, len(_eligible)))
+                        _drop_amount = random.randint(
+                            max(1_000, total_bet // 20),
+                            max(10_000, total_bet // 5)
+                        )
+                        _winners = random.sample(_eligible, _drop_count)
+                        _conn = await get_conn()
+                        try:
+                            for _m in _winners:
+                                await ensure_user(_conn, _m)
+                                await update_balance(_conn, _m.id, _drop_amount)
+                                await log_transaction(_conn, _m.id, "bj_gem_drop", _drop_amount)
+                        finally:
+                            await release_conn(_conn)
+
+                        _drop_mentions = ", ".join(m.mention for m in _winners)
+                        _drop_e = discord.Embed(
+                            color=C_WIN,
+                            title="💎  Gem Drop!",
+                            description=(
+                                f"**{self.creator.display_name}** won at Blackjack and triggered a gem drop!\n\n"
+                                f"🎉 {_drop_mentions}\n"
+                                f"each received **{format_amount(_drop_amount)}** 💎"
+                            )
+                        )
+                        _brand_embed(_drop_e)
+                        drop_ch = bot.get_channel(REWARD_LOG_ID) or interaction.channel
+                        if drop_ch:
+                            await drop_ch.send(embed=_drop_e)
+            except Exception as _drop_err:
+                print(f"[BJ GEM DROP ERROR] {_drop_err}")
+
         log_e = discord.Embed(title="♠️ Blackjack Result", color=color)
         log_e.add_field(name="Player",  value=self.creator.mention,        inline=True)
         log_e.add_field(name="Bet",     value=format_amount(total_bet),    inline=True)
@@ -5629,7 +5660,7 @@ class BlackjackView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.blurple, emoji="🃏")
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.blurple, emoji="🎯")
     async def hit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -5659,7 +5690,7 @@ class BlackjackView(BaseGameView):
             except Exception as e:
                 print(f'[BJ HIT UPDATE FAILED] {e}')
 
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.success, emoji="✋")
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.success, emoji="🤚")
     async def stand_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -5667,7 +5698,7 @@ class BlackjackView(BaseGameView):
         await interaction.response.defer()
         await self._end_game(interaction)
 
-    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger, emoji="💰")
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger, emoji="💎")
     async def double_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.creator.id or self.done:
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -7455,15 +7486,7 @@ def mines_calc_mult(mines: int, gems_found: int) -> float:
         mult *= (1.0 / prob) * factor
     return round(min(mult, MINES_MAX_MULT), 2)
 
-_MINES_DANGER_WEIGHTS = [
-    1,2,4,2,1,
-    2,6,10,6,2,
-    4,10,16,10,4,
-    2,6,10,6,2,
-    1,2,4,2,1,
-]  # heavily center-heavy — center tile (index 12) weight=16
-
-MINES_HOUSE_WIN = 0.72   # 72% of clicks after the first are rigged toward a bomb tile
+MINES_HOUSE_WIN = 0.99   # kept for admin panel reference only — rig is now deterministic
 
 def mines_generate_grid(mines: int, force_win: bool = False) -> list:
     """Generate initial grid. Rigging happens per-click in MinesView._pick."""
@@ -7478,9 +7501,10 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
 
 def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
     """
-    Heavily rigged board — after every safe click, bombs cluster very aggressively
-    toward tiles most likely to be clicked next (adjacent + center-biased).
-    Uses weighted sampling without replacement for correct mine count.
+    Maximum rigging — deterministic bomb placement.
+    Bombs are placed directly on the tiles immediately adjacent to the last click first,
+    then fill outward. No randomness — the next tile the player clicks is almost
+    guaranteed to be a bomb.
     """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
     if len(unrevealed) <= mines:
@@ -7488,29 +7512,20 @@ def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) ->
 
     r_c, c_c = divmod(last_clicked, 5)
 
-    def weight(idx):
+    # Sort ALL unrevealed tiles by manhattan distance from last click (closest first)
+    # Ties broken by center proximity so bombs fill the most-likely-clicked tiles
+    def sort_key(idx):
         r, c = divmod(idx, 5)
-        dist  = abs(r - r_c) + abs(c - c_c)
-        base  = _MINES_DANGER_WEIGHTS[idx]
-        if dist == 0:  return 0          # already revealed — never place bomb here
-        if dist == 1:  return base + 50  # immediately adjacent — extremely dangerous
-        if dist == 2:  return base + 25  # two hops away — very dangerous
-        if dist == 3:  return base + 8
-        return max(base - 2, 1)
+        dist_from_click  = abs(r - r_c) + abs(c - c_c)
+        dist_from_center = abs(r - 2) + abs(c - 2)
+        return (dist_from_click, dist_from_center)
 
-    weights = [weight(i) for i in unrevealed]
-    chosen  = []
-    pool    = list(zip(unrevealed, weights))
-    for _ in range(min(mines, len(pool))):
-        if not pool: break
-        t = random.uniform(0, sum(w for _, w in pool))
-        cum = 0
-        for j, (tile, w) in enumerate(pool):
-            cum += w
-            if cum >= t:
-                chosen.append(tile)
-                pool.pop(j)
-                break
+    sorted_unrevealed = sorted(unrevealed, key=sort_key)
+    # Skip dist==0 (the tile just clicked — already revealed)
+    bomb_targets = [i for i in sorted_unrevealed if i != last_clicked]
+
+    # Place all mines on the closest unrevealed tiles — purely deterministic
+    chosen = bomb_targets[:mines]
 
     new_grid = ["gem"] * MINES_GRID_SIZE
     for b in chosen:
@@ -7705,11 +7720,8 @@ class MinesView(BaseGameView):
                 self.revealed.add(index)
                 self.gems_found += 1
 
-                # Rig board after first gem — 72% of subsequent clicks push bombs toward player
-                if not self.done and self.gems_found > 1 and random.random() < MINES_HOUSE_WIN:
-                    self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
-                elif not self.done and self.gems_found == 1:
-                    # Always rig after first safe click
+                # Always rig board after every safe click — bombs cluster toward next likely tile
+                if not self.done:
                     self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
 
                 gems_total = MINES_GRID_SIZE - self.mines
@@ -8413,8 +8425,8 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:
-        # 46.5% player wins, 53.5% house wins
-        if random.random() < 0.465:
+        # 48% player wins, 52% house wins
+        if random.random() < 0.48:
             winner_idx = chosen  # player's horse wins
         else:
             loser_horses = [i for i in range(4) if i != chosen]
@@ -8797,7 +8809,7 @@ class BalloonView(BaseGameView):
             elif _pb_forced == "win":
                 popped = False   # never pop while forced win active
             else:
-                popped = random.random() < BOT_HOUSE_WIN
+                popped = random.random() < balloon_pop_chance(self.pumps + 1)
 
             self.pumps += 1
 
@@ -9212,7 +9224,7 @@ async def cmd_pumpballoon(interaction: discord.Interaction, bet: str):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
-BOT_HOUSE_WIN_CD = 0.535   # 53.5/46.5 edge matching all other games
+BOT_HOUSE_WIN_CD = 0.52    # 52/48 edge matching all other games
 
 CD_COLORS = [
     ("🔴", "Red"),
@@ -10113,24 +10125,23 @@ async def _get_stock_item(conn, item_name: str):
         item_name
     )
 
-async def _stock_embed(rows, page: int = 0, page_size: int = 10) -> discord.Embed:
-    """Build the public /stock embed — numbered list, paginated."""
+async def _stock_embed(merged_rows, page: int = 0, page_size: int = 10) -> discord.Embed:
+    """Build the public /stock embed from a pre-merged list of (name, val, qty) tuples."""
     e = discord.Embed(color=C_GOLD, title="📦  Stock Items")
-    if not rows:
+    if not merged_rows:
         e.description = "*No items currently in stock.*"
         _brand_embed(e)
         return e
-    total   = len(rows)
-    pages   = max(1, (total + page_size - 1) // page_size)
-    page    = max(0, min(page, pages - 1))
-    chunk   = rows[page * page_size:(page + 1) * page_size]
-    lines   = []
-    for idx, r in enumerate(chunk, start=page * page_size + 1):
-        val  = r["unit_value"]
-        name = r["item_name"]
-        lines.append(f"{idx} **{name}** - Value: {format_amount(val)} 💎")
+    total  = len(merged_rows)
+    pages  = max(1, (total + page_size - 1) // page_size)
+    page   = max(0, min(page, pages - 1))
+    chunk  = merged_rows[page * page_size:(page + 1) * page_size]
+    lines  = []
+    for idx, (name, val, qty) in enumerate(chunk, start=page * page_size + 1):
+        qty_str = f" `x{qty}`" if qty > 1 else ""
+        lines.append(f"`{idx}.` **{name}**{qty_str} — {format_amount(val)} 💎")
     e.description = "\n".join(lines)
-    e.set_footer(text=f"Page {page+1}/{pages}  ·  Total Items: {total}")
+    e.set_footer(text=f"Page {page+1}/{pages}  ·  {total} unique item{'s' if total != 1 else ''}")
     _brand_embed(e)
     return e
 
@@ -10639,14 +10650,25 @@ async def cmd_withdraw(interaction: discord.Interaction):
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
 
+def _merge_stock_rows(rows) -> list:
+    """Group raw DB rows by (item_name, unit_value), summing quantities. Returns sorted list of (name, val, qty)."""
+    grouped = {}
+    for r in rows:
+        key = (r["item_name"], r["unit_value"])
+        grouped[key] = grouped.get(key, 0) + r["quantity"]
+    return sorted(
+        [(name, val, qty) for (name, val), qty in grouped.items()],
+        key=lambda x: x[1], reverse=True
+    )
+
 class StockView(discord.ui.View):
-    """Paginated view for /stock — shows Prev/Next buttons when there are >10 items."""
-    def __init__(self, rows, page: int = 0, page_size: int = 10):
-        super().__init__(timeout=60)
-        self.rows        = rows
+    """Paginated view for /stock — 10 items per page, buttons appear whenever there are multiple pages."""
+    def __init__(self, merged_rows, page: int = 0, page_size: int = 10):
+        super().__init__(timeout=120)
+        self.rows        = merged_rows  # list of (name, val, qty)
         self.page        = page
         self.page_size   = page_size
-        self.total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        self.total_pages = max(1, (len(merged_rows) + page_size - 1) // page_size)
         self._update_buttons()
 
     def _update_buttons(self):
@@ -10676,9 +10698,11 @@ async def cmd_stock(interaction: discord.Interaction):
         rows = await _get_stock(conn)
     finally:
         await release_conn(conn)
-    embed = await _stock_embed(rows, page=0)
-    view  = StockView(rows, page=0) if len(rows) > 10 else None
-    if view:
+    merged      = _merge_stock_rows(rows)
+    embed       = await _stock_embed(merged, page=0)
+    total_pages = max(1, (len(merged) + 9) // 10)
+    if total_pages > 1:
+        view = StockView(merged, page=0)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     else:
         await interaction.followup.send(embed=embed, ephemeral=True)
