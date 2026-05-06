@@ -1,4 +1,4 @@
-8import discord
+import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncpg
@@ -96,7 +96,7 @@ OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
 BOT_HOUSE_WIN        = 0.5175 # 52/48 edge across all games
-BJ_DEALER_STAND      = 18    # Dealer stands at this total — 18 gives ~7% house edge
+BJ_DEALER_STAND      = 17    # Dealer stands at this total — 18 gives ~7% house edge
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
