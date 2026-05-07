@@ -591,28 +591,26 @@ async def init_db():
             )
         """)
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS invite_rewards (
-                invitee_id   TEXT PRIMARY KEY,
-                inviter_id   TEXT NOT NULL,
-                rewarded_at  TEXT NOT NULL,
-                reward_amt   BIGINT NOT NULL DEFAULT 0,
-                wagered_so_far BIGINT NOT NULL DEFAULT 0,
-                req_met      BOOLEAN NOT NULL DEFAULT FALSE
+            CREATE TABLE IF NOT EXISTS invites (
+                user_id  TEXT PRIMARY KEY,
+                invites  BIGINT NOT NULL DEFAULT 0,
+                fake     BIGINT NOT NULL DEFAULT 0,
+                leaves   BIGINT NOT NULL DEFAULT 0,
+                claimed  BIGINT NOT NULL DEFAULT 0
             )
         """)
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS suspended_invite_rewards (
-                user_id      TEXT PRIMARY KEY,
-                suspended_at TEXT NOT NULL DEFAULT '',
-                suspended_by TEXT NOT NULL DEFAULT ''
+            CREATE TABLE IF NOT EXISTS pending_invites (
+                invitee_id  TEXT PRIMARY KEY,
+                inviter_id  TEXT NOT NULL,
+                joined_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS pending_verifications (
-                member_id    TEXT PRIMARY KEY,
-                guild_id     TEXT NOT NULL,
-                inviter_id   TEXT,
-                joined_at    TEXT NOT NULL DEFAULT ''
+            CREATE TABLE IF NOT EXISTS vaults (
+                user_id       TEXT PRIMARY KEY,
+                password      TEXT NOT NULL DEFAULT '',
+                vault_balance BIGINT NOT NULL DEFAULT 0
             )
         """)
         await conn.execute("""
@@ -1458,6 +1456,7 @@ async def on_ready():
     asyncio.create_task(_auto_create_roles())
     asyncio.create_task(_auto_create_channels())
     asyncio.create_task(channel_cleanup_loop())
+    asyncio.create_task(_invite_check_loop())
 
 async def _auto_create_roles():
     """Auto-create only the required staff/member roles on startup if they don't exist yet.
@@ -1784,6 +1783,8 @@ async def on_guild_join(guild: discord.Guild):
     await _setup_guild_channels(guild)
     print(f"[BOT] Joined new guild: {guild.name} — roles and channels set up")
 
+# ===== INVITE SYSTEM (PostgreSQL) =====
+
 @bot.event
 async def on_invite_create(invite: discord.Invite):
     """Keep cache up to date when new invites are created."""
@@ -1799,7 +1800,7 @@ async def on_invite_delete(invite: discord.Invite):
 @bot.event
 async def on_member_join(member: discord.Member):
     asyncio.create_task(on_member_join_raid_check(member))
-    guild = member.guild  # snapshot only happens AFTER reward is paid or rejoin confirmed
+    guild = member.guild
 
     conn = await get_conn()
     try:
@@ -1811,32 +1812,6 @@ async def on_member_join(member: discord.Member):
         await release_conn(conn)
 
     await asyncio.sleep(1)
-    inviter_id = None
-    try:
-        try:
-            current_invites = await guild.invites()
-        except discord.Forbidden:
-            print(f"[INVITE] Missing MANAGE_GUILD permission in {guild.name}")
-            current_invites = []
-        except Exception as e:
-            print(f"[INVITE] Could not fetch invites: {e}")
-            current_invites = []
-
-        old_counts = _invite_cache.get(guild.id, {})
-        if not old_counts and current_invites:
-            _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
-            print(f"[INVITE] Cache was empty — populated, skipping join ({member.name})")
-        elif current_invites:
-            for inv in sorted(current_invites, key=lambda x: (x.uses or 0) - old_counts.get(x.code, 0), reverse=True):
-                old   = old_counts.get(inv.code, 0)
-                delta = (inv.uses or 0) - old
-                if delta > 0 and inv.inviter and inv.inviter.id != member.id and not inv.inviter.bot:
-                    inviter_id = str(inv.inviter.id)
-                    print(f"[INVITE] {member.name} joined via {inv.code} by {inv.inviter.name}")
-                    break
-            _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
-    except Exception as e:
-        print(f"[INVITE] Error tracking invite: {e}")
 
     unverified_role = await ensure_unverified_role(guild)
     if unverified_role and unverified_role not in member.roles:
@@ -1845,191 +1820,272 @@ async def on_member_join(member: discord.Member):
         except Exception as e:
             print(f"[INVITE] Could not assign Unverified role to {member}: {e}")
 
-    if inviter_id:
+    # Track invite using PostgreSQL
+    try:
+        current_invites = await guild.invites()
+    except Exception:
+        current_invites = []
+
+    old_counts = _invite_cache.get(guild.id, {})
+    if not old_counts and current_invites:
+        _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
+        return
+
+    used_invite = None
+    for inv in sorted(current_invites, key=lambda x: (x.uses or 0) - old_counts.get(x.code, 0), reverse=True):
+        old   = old_counts.get(inv.code, 0)
+        delta = (inv.uses or 0) - old
+        if delta > 0 and inv.inviter and inv.inviter.id != member.id and not inv.inviter.bot:
+            used_invite = inv
+            break
+
+    _invite_cache[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
+
+    if used_invite and used_invite.inviter:
+        inviter = used_invite.inviter
         conn = await get_conn()
         try:
-            async with conn.transaction():
-                # Atomic check-and-insert: only inserts if neither table has a record
-                # for this member, preventing race conditions on rapid rejoins
-                already = await conn.fetchrow(
-                    "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(member.id))
-                if already:
-                    print(f"[INVITE] {member.name} already rewarded, skipping")
-                else:
-                    result = await conn.execute(
-                        """
-                        INSERT INTO pending_verifications (member_id, guild_id, inviter_id, joined_at)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (member_id) DO UPDATE
-                            SET inviter_id=$3, joined_at=$4
-                        """,
-                        str(member.id), str(guild.id), inviter_id, now_ts()
+            await conn.execute(
+                """INSERT INTO pending_invites (invitee_id, inviter_id)
+                   VALUES ($1, $2)
+                   ON CONFLICT (invitee_id) DO UPDATE SET inviter_id = $2, joined_at = NOW()""",
+                str(member.id), str(inviter.id)
+            )
+        finally:
+            await release_conn(conn)
+        print(f"[INVITE] {member.name} joined via {used_invite.code} — pending (awaiting 90d age + Member role) — inviter: {inviter.name}")
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Increment leaves count for the inviter if the member who left was a pending or credited invite."""
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            "SELECT inviter_id FROM pending_invites WHERE invitee_id=$1", str(member.id)
+        )
+        if row:
+            await conn.execute(
+                """INSERT INTO invites (user_id, leaves) VALUES ($1, 1)
+                   ON CONFLICT (user_id) DO UPDATE SET leaves = invites.leaves + 1""",
+                row["inviter_id"]
+            )
+            await conn.execute("DELETE FROM pending_invites WHERE invitee_id=$1", str(member.id))
+            print(f"[INVITE] {member.name} left — incrementing leaves for inviter {row['inviter_id']}")
+    except Exception as e:
+        print(f"[INVITE] on_member_remove error: {e}")
+    finally:
+        await release_conn(conn)
+
+async def _invite_check_loop():
+    """Every 60s: check pending invites for 90-day account age + Member role.
+    On pass: credit inviter, add 1.5x wager requirement, remove pending row."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        conn = await get_conn()
+        try:
+            rows = await conn.fetch("SELECT invitee_id, inviter_id, joined_at FROM pending_invites")
+            if not rows:
+                continue
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+
+            for row in rows:
+                invitee_id = int(row["invitee_id"])
+                inviter_id = row["inviter_id"]
+
+                # Fetch the invited member
+                member = guild.get_member(invitee_id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(invitee_id)
+                    except discord.NotFound:
+                        # They left — clean up
+                        await conn.execute("DELETE FROM pending_invites WHERE invitee_id=$1", str(invitee_id))
+                        continue
+                    except Exception:
+                        continue
+
+                # Check 1: Must have the Member role
+                has_member_role = any(r.name == MEMBER_ROLE_NAME for r in member.roles)
+                if not has_member_role:
+                    continue
+
+                # Check 2: Discord account must be 90+ days old
+                created = member.created_at
+                if created.tzinfo is None:
+                    from datetime import timezone as _tz
+                    created = created.replace(tzinfo=_tz.utc)
+                account_age_days = (discord.utils.utcnow() - created).days
+                if account_age_days < 90:
+                    print(f"[INVITE] {member.name} has Member role but account only {account_age_days}d old — waiting")
+                    continue
+
+                # Fetch inviter as a guild member
+                try:
+                    inviter_member = guild.get_member(int(inviter_id)) or await guild.fetch_member(int(inviter_id))
+                except discord.NotFound:
+                    print(f"[INVITE] Inviter {inviter_id} not in guild — skipping")
+                    await conn.execute("DELETE FROM pending_invites WHERE invitee_id=$1", str(invitee_id))
+                    continue
+                except Exception as e:
+                    print(f"[INVITE] Could not fetch inviter {inviter_id}: {e}")
+                    continue
+
+                # All checks passed — credit inviter
+                setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
+                reward  = int(float(setting["value"])) if setting and setting["value"] else 7_000_000
+
+                async with conn.transaction():
+                    await conn.execute("DELETE FROM pending_invites WHERE invitee_id=$1", str(invitee_id))
+                    await ensure_user(conn, inviter_member)
+                    await update_balance(conn, int(inviter_id), reward)
+                    await log_transaction(conn, int(inviter_id), "invite_reward", reward,
+                                         f"invited {member.name} (90d+ account, Member role confirmed)")
+                    await add_wager_req(conn, int(inviter_id), int(reward * 1.5), "invite_reward")
+                    await conn.execute(
+                        """INSERT INTO invites (user_id, invites) VALUES ($1, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET invites = invites.invites + 1""",
+                        inviter_id
                     )
-                    print(f"[INVITE] Stored pending invite: {member.name} invited by {inviter_id} — awaiting Member role")
+
+                print(f"[INVITE] ✅ Credited {format_amount(reward)} to {inviter_member.name} — {member.name} passed all checks")
+
+                # DM the inviter
+                try:
+                    dm = discord.Embed(
+                        title="🎉 Invite Reward!",
+                        description=(
+                            f"**{member.name}** verified and got the Member role!\n"
+                            f"You earned **{format_amount(reward)} 💎**\n\n"
+                            f"Wager **{format_amount(int(reward * 1.5))}** to unlock your reward 👑"
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await inviter_member.send(embed=dm)
+                except Exception:
+                    pass
+
         except Exception as e:
-            print(f"[INVITE] Could not store pending invite: {e}")
+            print(f"[INVITE LOOP] Error: {e}")
         finally:
             await release_conn(conn)
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
-    """Pay invite reward when the invited user gains the Member role (staff-assigned after external verify)."""
-    # Only fire when Member role is newly added (not already had it)
+    """Snapshot member on role update."""
     had_member = any(r.name == MEMBER_ROLE_NAME for r in before.roles)
     has_member  = any(r.name == MEMBER_ROLE_NAME for r in after.roles)
-    if had_member or not has_member:
-        return
-
-    conn = await get_conn()
-    try:
-        # ── Lookup pending invite ──────────────────────────────────────────────
-        pending = await conn.fetchrow(
-            "SELECT inviter_id FROM pending_verifications WHERE member_id=$1",
-            str(after.id)
-        )
-        if not pending or not pending["inviter_id"]:
-            # No pending invite tracked — snapshot and exit cleanly
-            await _snapshot_member(conn, after)
-            return
-
-        inviter_id = pending["inviter_id"]
-
-        # ── Guard 2: inviter must currently hold the Member role ───────────────
-        guild = after.guild
-        inviter_member = guild.get_member(int(inviter_id))
-        if inviter_member is None:
-            try:
-                inviter_member = await guild.fetch_member(int(inviter_id))
-            except discord.NotFound:
-                print(f"[INVITE] Inviter {inviter_id} is not in the guild — skipping reward")
-                await conn.execute(
-                    "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-                )
-                await _snapshot_member(conn, after)
-                return
-            except Exception as _fe:
-                print(f"[INVITE] Could not fetch inviter {inviter_id}: {_fe} — skipping reward")
-                await conn.execute(
-                    "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-                )
-                await _snapshot_member(conn, after)
-                return
-        # Guard 2 note: inviter does not need the Member role — staff/owners can invite too
-
-        # ── Guard 3: inviter not suspended, invitee not already rewarded ───────
-        suspended = await conn.fetchrow(
-            "SELECT 1 FROM suspended_invite_rewards WHERE user_id=$1", inviter_id)
-        already = await conn.fetchrow(
-            "SELECT invitee_id FROM invite_rewards WHERE invitee_id=$1", str(after.id))
-        if suspended or already:
-            await conn.execute(
-                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-            )
-            await _snapshot_member(conn, after)
-            return
-
-        # ── Guard 4: 60-day Discord account age on the invitee ────────────────
-        from datetime import timezone as _tz
-        created = after.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=_tz.utc)
-        account_age_days = (discord.utils.utcnow() - created).days
-        if account_age_days < 60:
-            print(f"[INVITE] {after.name} account is only {account_age_days}d old — skipping reward")
-            await conn.execute("DELETE FROM pending_verifications WHERE member_id=$1", str(after.id))
-            return
-
-        # ── Read reward amount ─────────────────────────────────────────────────
-        setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
-        reward  = int(float(setting["value"])) if setting and setting["value"] else 0
-        if reward <= 0:
-            print(f"[INVITE] No reward configured — pending row kept for {after.name}, set reward with /setreward")
-            # Keep pending row intact — admin can manually grant later if needed
-            return
-
-        # inviter_member is already a guild Member at this point
-        inviter_obj = inviter_member
-
-        # ── All checks passed — atomic payout ─────────────────────────────────
-        async with conn.transaction():
-            await conn.execute(
-                "DELETE FROM pending_verifications WHERE member_id=$1", str(after.id)
-            )
-            await ensure_user(conn, inviter_obj)
-            await update_balance(conn, int(inviter_id), reward)
-            await log_transaction(conn, int(inviter_id), "invite_reward", reward,
-                                  f"invited {after.name} (Member role confirmed)")
-            await add_wager_req(conn, int(inviter_id), int(reward * 1.5), "invite_reward")
-            await conn.execute(
-                """INSERT INTO invite_rewards (invitee_id, inviter_id, rewarded_at, reward_amt, wagered_so_far, req_met)
-                   VALUES ($1, $2, $3, $4, 0, FALSE) ON CONFLICT (invitee_id) DO NOTHING""",
-                str(after.id), inviter_id, now_ts(), reward
-            )
-
-        # Snapshot the new member now that they're confirmed as a real first-join
-        await _snapshot_member(conn, after)
-
-        print(f"[INVITE] ✅ Paid {format_amount(reward)} to {inviter_obj} — {after.name} got Member role")
-
-        log_e = discord.Embed(
-            title="✦  Invite Reward Triggered",
-            description=(
-                f"**{after.name}** received the Member role\n"
-                f"{inviter_obj.mention} earned **{format_amount(reward)}** 💎"
-            ),
-            color=C_WIN
-        )
-        log_e.add_field(name="👤 Inviter",  value=f"{inviter_obj.mention}\n`{inviter_obj}`", inline=True)
-        log_e.add_field(name="🆕 Invitee", value=f"{after.mention}\n`{after}`",              inline=True)
-        log_e.add_field(name="💎 Reward",  value=f"**{format_amount(reward)} 💎**",           inline=True)
-        _brand_embed(log_e)
-        await send_invite_log(log_e)
-
+    if not had_member and has_member:
+        conn = await get_conn()
         try:
-            dm = discord.Embed(
-                title="🎉  Invite Reward!",
-                description=(
-                    f"**{after.name}** just got the Member role and you earned\n"
-                    f"**{format_amount(reward)} 💎**!\n\nKeep inviting to earn more 👑"
-                ),
-                color=C_WIN
-            )
-            _brand_embed(dm)
-            await inviter_obj.send(embed=dm)
+            await _snapshot_member(conn, after)
         except Exception:
             pass
+        finally:
+            await release_conn(conn)
 
-    except Exception as e:
-        print(f"[INVITE] on_member_update error: {e}")
+# ===== /invites =====
+@bot.tree.command(name="invites", description="Check your invite statistics")
+async def cmd_invites(interaction: discord.Interaction):
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            "SELECT invites, fake, leaves, claimed FROM invites WHERE user_id=$1",
+            str(interaction.user.id)
+        )
     finally:
         await release_conn(conn)
 
-async def send_invite_log(embed: discord.Embed):
-    """Send to the invite rewards log channel."""
-    ch_id = INVITE_LOG_ID
-    if not ch_id:
-        # Try to find by name if auto-detect hasn't run yet
-        guild = bot.get_guild(GUILD_ID)
-        if guild:
-            found = next((c for c in guild.text_channels if "invite-log" in c.name.lower()), None)
-            if found:
-                ch_id = found.id
-    if not ch_id:
-        print("[INVITE LOG] No invite-log channel found")
-        return
-    ch = bot.get_channel(ch_id)
-    if ch is None:
-        try:
-            ch = await bot.fetch_channel(ch_id)
-        except Exception as e:
-            print(f"[INVITE LOG] Could not fetch channel {ch_id}: {e}")
-            return
+    invites = row["invites"] if row else 0
+    fake    = row["fake"]    if row else 0
+    leaves  = row["leaves"]  if row else 0
+    claimed = row["claimed"] if row else 0
+
+    valid  = invites - fake - leaves
+    reward = (valid - claimed) * 7_000_000
+
+    embed = discord.Embed(
+        title="📨 Invite Statistics",
+        description="━━━━━━━━━━━━━━━━━━",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(name="👤 User",           value=interaction.user.mention, inline=False)
+    embed.add_field(name="📈 Total Invites",  value=invites,                  inline=True)
+    embed.add_field(name="❌ Fake",           value=fake,                     inline=True)
+    embed.add_field(name="📤 Leaves",         value=leaves,                   inline=True)
+    embed.add_field(name="✅ Valid Invites",  value=valid,                    inline=False)
+    embed.add_field(name="💰 Claimable",      value=format_amount(reward),    inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# ===== /claiminvites =====
+@bot.tree.command(name="claiminvites", description="Claim your invite rewards")
+async def cmd_claiminvites(interaction: discord.Interaction):
+    conn = await get_conn()
     try:
-        await ch.send(embed=embed)
-    except discord.Forbidden:
-        print(f"[INVITE LOG] Missing send permission in #{ch.name}")
-    except Exception as e:
-        print(f"[INVITE LOG] Failed to send: {e}")
+        row = await conn.fetchrow(
+            "SELECT invites, fake, leaves, claimed FROM invites WHERE user_id=$1",
+            str(interaction.user.id)
+        )
+        if not row:
+            await interaction.response.send_message("❌ You have no invites to claim.", ephemeral=True)
+            return
+
+        valid     = row["invites"] - row["fake"] - row["leaves"]
+        claimable = valid - row["claimed"]
+
+        if claimable <= 0:
+            await interaction.response.send_message("❌ Nothing to claim.", ephemeral=True)
+            return
+
+        reward = claimable * 7_000_000
+
+        async with conn.transaction():
+            await ensure_user(conn, interaction.user)
+            await update_balance(conn, interaction.user.id, reward)
+            await log_transaction(conn, interaction.user.id, "invite_reward",
+                                  reward, f"claimed {claimable} invite rewards")
+            await conn.execute(
+                "UPDATE invites SET claimed = $1 WHERE user_id = $2",
+                valid, str(interaction.user.id)
+            )
+    finally:
+        await release_conn(conn)
+
+    embed = discord.Embed(
+        title="💰 Invite Claim",
+        description="━━━━━━━━━━━━━━━━━━",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="📈 Claimed Invites", value=claimable,            inline=False)
+    embed.add_field(name="💵 Reward",          value=format_amount(reward), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# ===== /inviteleaderboard =====
+@bot.tree.command(name="inviteleaderboard", description="Top inviters")
+async def cmd_inviteleaderboard(interaction: discord.Interaction):
+    conn = await get_conn()
+    try:
+        rows = await conn.fetch(
+            "SELECT user_id, invites FROM invites ORDER BY invites DESC LIMIT 10"
+        )
+    finally:
+        await release_conn(conn)
+
+    text = ""
+    for i, row in enumerate(rows, start=1):
+        user = bot.get_user(int(row["user_id"]))
+        name = user.name if user else f"User {row['user_id']}"
+        text += f"**{i}.** {name} — {row['invites']}\n"
+
+    embed = discord.Embed(
+        title="🏆 Invite Leaderboard",
+        description=text or "No data yet",
+        color=discord.Color.gold()
+    )
+    await interaction.response.send_message(embed=embed)
 
 async def send_reward_log(embed: discord.Embed):
     """Send to the rewards log channel (rain, promo, daily, boost)."""
@@ -7851,6 +7907,10 @@ class MinesView(BaseGameView):
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
+# ============================================================
+# PART 2 OF 2 — paste directly after part1 in your editor
+# ============================================================
+
 @bot.tree.command(name="mines", description="Play Mines — find gems and avoid bombs!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M", mines="Number of mines (1-24)")
 async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
@@ -10034,29 +10094,24 @@ async def cmd_settippublic(interaction: discord.Interaction, channel: discord.Te
 async def cmd_managerewards(interaction: discord.Interaction, user: discord.Member, action: str):
     conn = await get_conn()
     try:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS suspended_invite_rewards (
-                user_id TEXT PRIMARY KEY,
-                suspended_at TEXT NOT NULL,
-                suspended_by TEXT NOT NULL
-            )
-        """)
-        already = await conn.fetchrow("SELECT 1 FROM suspended_invite_rewards WHERE user_id=$1", str(user.id))
+        row = await conn.fetchrow("SELECT fake FROM invites WHERE user_id=$1", str(user.id))
 
         if action == "suspend":
-            if already:
+            # Mark as fake (effectively suspends reward eligibility for this user's invites)
+            if row and row["fake"] < 0:
                 await interaction.response.send_message(f"⚠️ Invite rewards are already suspended for {user.mention}.", ephemeral=True)
                 return
             await conn.execute(
-                "INSERT INTO suspended_invite_rewards (user_id, suspended_at, suspended_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                str(user.id), now_ts(), str(interaction.user.id)
+                """INSERT INTO invites (user_id, fake) VALUES ($1, -1)
+                   ON CONFLICT (user_id) DO UPDATE SET fake = -1""",
+                str(user.id)
             )
             title, desc, color = "🔒 Invite Rewards Suspended", f"Invite rewards **suspended** for {user.mention}.", C_WARN
         else:
-            if not already:
+            if not row or row["fake"] >= 0:
                 await interaction.response.send_message(f"⚠️ Invite rewards are not currently suspended for {user.mention}.", ephemeral=True)
                 return
-            await conn.execute("DELETE FROM suspended_invite_rewards WHERE user_id=$1", str(user.id))
+            await conn.execute("UPDATE invites SET fake = 0 WHERE user_id = $1", str(user.id))
             title, desc, color = "✅ Invite Rewards Restored", f"Invite rewards **restored** for {user.mention}.", C_WIN
     finally:
         await release_conn(conn)
@@ -10075,11 +10130,10 @@ async def cmd_invitestats(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     conn = await get_conn()
     try:
-        rows = await conn.fetch(
-            "SELECT invitee_id, rewarded_at FROM invite_rewards WHERE inviter_id=$1 ORDER BY rewarded_at DESC",
+        row = await conn.fetchrow(
+            "SELECT invites, fake, leaves, claimed FROM invites WHERE user_id=$1",
             str(interaction.user.id)
         )
-        setting = await conn.fetchrow("SELECT value FROM bot_settings WHERE key='invite_reward'")
     except Exception as e:
         print(f"[ERROR] invitestats: {type(e).__name__}: {e}")
         await interaction.followup.send("⚠️  Something went wrong — try again.", ephemeral=True)
@@ -10087,19 +10141,18 @@ async def cmd_invitestats(interaction: discord.Interaction):
     finally:
         await release_conn(conn)
 
-    reward_per = int(setting["value"]) if setting else 0
-    total_invites = len(rows)
-    total_earned = total_invites * reward_per
+    invites = row["invites"] if row else 0
+    fake    = max(0, row["fake"]) if row else 0
+    leaves  = row["leaves"]       if row else 0
+    claimed = row["claimed"]      if row else 0
+    valid   = max(0, invites - fake - leaves)
+    earned  = claimed * 7_000_000
 
     embed = discord.Embed(title="📨 Your Invite Stats", color=C_BLUE)
-    embed.add_field(name="Valid Invites",  value=str(total_invites),           inline=True)
-    embed.add_field(name="Reward Each",   value=format_amount(reward_per),    inline=True)
-    embed.add_field(name="Total Earned",  value=format_amount(total_earned),  inline=True)
-    if rows:
-        recent = "\
-".join(f"• <@{r['invitee_id']}> — {r['rewarded_at']}" for r in rows[:5])
-        embed.add_field(name="Recent Invites", value=recent, inline=False)
-    embed.set_footer(text="Only accounts 60+ days old count as valid invites")
+    embed.add_field(name="Total Invites", value=str(invites),          inline=True)
+    embed.add_field(name="Valid Invites", value=str(valid),            inline=True)
+    embed.add_field(name="Total Earned",  value=format_amount(earned), inline=True)
+    embed.set_footer(text="Use /invites for full breakdown · /claiminvites to redeem")
     await interaction.followup.send(embed=embed)
 
 COINS_PER_DOLLAR = 10_000  # 10,000 gems = $1 (1 gem = $0.0001)
@@ -11518,18 +11571,6 @@ async def cmd_liststaff(interaction: discord.Interaction):
     embed.set_footer(text=f"Use /assignstaff or /removestaff to manage • {now_ts()}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="resetdatabase", description="[Admin] ⚠️ DANGER — Wipe ALL data.")
-@admin_only()
-async def cmd_resetdatabase(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="⚠️ DANGER: Reset Database",
-        description="This will **permanently delete ALL** user data, stock, and transactions.\
-\
-**This CANNOT be undone.**",
-        color=C_LOSS
-    )
-    await interaction.response.send_message(embed=embed, view=ResetConfirmView(interaction.user.id), ephemeral=True)
-
 @bot.tree.command(name="verifybalance", description="[Admin] Check for balance issues.")
 @admin_only()
 async def cmd_verifybalance(interaction: discord.Interaction):
@@ -11710,36 +11751,6 @@ async def cmd_adminstats(interaction: discord.Interaction):
         print(f"[ERROR] adminstats: {type(e).__name__}: {e}")
         await interaction.followup.send("⚠️  Something went wrong — try again.", ephemeral=True)
 
-@bot.tree.command(name="bankroll", description="[Admin] Show total gems in circulation and house financial summary.")
-@admin_only()
-async def cmd_bankroll(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    conn = await get_conn()
-    try:
-        totals = await conn.fetchrow(
-            "SELECT SUM(balance) as circulation, SUM(total_deposited) as deposited, COUNT(*) as users FROM users"
-        )
-        tax_row = await conn.fetchrow(
-            "SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE action LIKE '%_tax'"
-        )
-    finally:
-        await release_conn(conn)
-
-    circulation = totals["circulation"] or 0
-    deposited   = totals["deposited"] or 0
-    users       = totals["users"] or 0
-    tax         = int(tax_row["total"]) if tax_row else 0
-    profit_est  = deposited - circulation
-
-    embed = discord.Embed(title="Bankroll Overview", color=C_WIN)
-    embed.add_field(name="💎 Total In Circulation", value=format_amount(circulation), inline=True)
-    embed.add_field(name="📥 Total Deposited",      value=format_amount(deposited),   inline=True)
-    embed.add_field(name="👥 Total Players",         value=f"{users:,}",              inline=True)
-    embed.add_field(name="💸 Tax Collected",         value=format_amount(tax),         inline=True)
-    embed.add_field(name="📈 House Profit Est.",     value=format_amount(max(0, profit_est)), inline=True)
-
-    embed.set_footer(text=f"Admin only • {now_ts()}")
-    await interaction.followup.send(embed=embed, ephemeral=True)
 
 _pf_store: dict[str, dict] = {}  # game_id → {server_seed, client_seed, nonce, hash}
 
@@ -12363,7 +12374,7 @@ async def cmd_createranks(interaction: discord.Interaction):
 async def global_link_check(interaction: discord.Interaction) -> bool:
     """Block every slash command (except /link and admin cmds) until Roblox is linked."""
     cmd_name = interaction.command.name if interaction.command else ""
-    exempt = {"link", "sync", "clearsync", "resetdatabase", "disable"}
+    exempt = {"link", "sync", "disable"}
     if cmd_name in exempt:
         return True
     if interaction.guild and hasattr(interaction.user, "roles"):
@@ -12971,21 +12982,6 @@ async def cmd_sync(interaction: discord.Interaction):
         print(f"[ERROR] {type(e).__name__}: {e}")
         await interaction.followup.send(f"❌ Sync failed: {e}", ephemeral=True)
 
-@bot.tree.command(name="clearsync", description="[Owner] Re-sync all slash commands.")
-@owner_only()
-async def cmd_clearsync(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        guild_obj = discord.Object(id=interaction.guild.id)
-        bot.tree.copy_global_to(guild=guild_obj)
-        guild_synced = await bot.tree.sync(guild=guild_obj)
-        await interaction.followup.send(
-            f"✅ Synced {len(guild_synced)} commands to this server!\nIf duplicates remain, press Ctrl+R in Discord to refresh.",
-            ephemeral=True
-        )
-    except Exception as e:
-        import traceback
-        await interaction.followup.send(f"❌ Error: {e}\n```{traceback.format_exc()[-500:]}```", ephemeral=True)
 
 import hashlib
 
@@ -15004,7 +15000,7 @@ ACHIEVEMENTS = [
     {"id":"wager_600m",     "emoji":"🐋", "name":"Whale",              "desc":"Wager 600M gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 600_000_000},
     {"id":"wager_1b5",      "emoji":"🌊", "name":"Deep Water",         "desc":"Wager 1.5B gems total",                      "cat":"economy",  "check": lambda r,x: r["wagered"] >= 1_500_000_000},
     {"id":"wager_3b",       "emoji":"💎", "name":"Emerald",            "desc":"Wager 3B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 3_000_000_000},
-    {"id":"wager_5b",       "emoji":"🎰", "name":"Degenerate",         "desc":"Wager 5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 5_000_000_000},
+    {"id":"wager_5b",       "emoji":"🎰", "name":"Degenerate",         "desc":"Wager 5B gems total",                        "cat":"economy",  "check": lambda r,x: r["wagered"] >= 7_000_000_000},
     {"id":"wager_10b",      "emoji":"👑", "name":"Mega Whale",         "desc":"Wager 10B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 10_000_000_000},
     {"id":"wager_15b",      "emoji":"🏴‍☠️","name":"Legend",             "desc":"Wager 15B gems total",                       "cat":"economy",  "check": lambda r,x: r["wagered"] >= 15_000_000_000},
     {"id":"balance_10m",    "emoji":"🔵", "name":"Stacking Up",        "desc":"Hold 10M gems at once",                      "cat":"economy",  "check": lambda r,x: r["balance"] >= 10_000_000},
@@ -15033,6 +15029,195 @@ ACHIEVEMENTS = [
     {"id":"cb_win_100",     "emoji":"👹", "name":"Battle God",         "desc":"Win 100 case battles",                       "cat":"social",   "check": lambda r,x: x.get("cb_wins",0) >= 100},
 ]
 
+# ===== VAULT SYSTEM (PostgreSQL) =====
+
+def _vault_embed(user: discord.User, wallet: int, vault_balance: int) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🔐 {user.name}'s Vault",
+        description="━━━━━━━━━━━━━━━━━━",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="💰 Wallet",       value=format_amount(wallet),        inline=False)
+    embed.add_field(name="🏦 Vault Stored", value=format_amount(vault_balance), inline=False)
+    embed.set_footer(text="Secure Storage System")
+    embed.set_image(url="https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExZGgyYmNhMWFmNHk3OHl6bmFzeWx1dnB0djVtbTJnenpnMjFmYmk4eiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/8lo7cWlEQkHWpP5IZ0/giphy.gif")
+    return embed
+
+class VaultView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user_id
+
+    @discord.ui.button(label="Deposit", style=discord.ButtonStyle.green)
+    async def deposit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VaultDepositModal(self.user_id))
+
+    @discord.ui.button(label="Withdraw", style=discord.ButtonStyle.blurple)
+    async def withdraw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VaultWithdrawModal(self.user_id))
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.red)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.message.delete()
+
+class VaultDepositModal(discord.ui.Modal, title="Deposit to Vault"):
+    amount = discord.ui.TextInput(label="Enter amount")
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.amount.value.replace(",", "").replace("_", ""))
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Amount must be positive.", ephemeral=True)
+            return
+
+        conn = await get_conn()
+        try:
+            row = await get_user(conn, self.user_id)
+            if not row:
+                await interaction.response.send_message("❌ No account found.", ephemeral=True)
+                return
+            if amount > row["balance"]:
+                await interaction.response.send_message("❌ Not enough gems in wallet.", ephemeral=True)
+                return
+
+            async with conn.transaction():
+                await update_balance(conn, self.user_id, -amount)
+                await log_transaction(conn, self.user_id, "vault_deposit", -amount, "deposited to vault")
+                await conn.execute(
+                    """INSERT INTO vaults (user_id, vault_balance)
+                       VALUES ($1, $2)
+                       ON CONFLICT (user_id) DO UPDATE
+                           SET vault_balance = vaults.vault_balance + $2""",
+                    str(self.user_id), amount
+                )
+
+            updated = await get_user(conn, self.user_id)
+            vault_row = await conn.fetchrow("SELECT vault_balance FROM vaults WHERE user_id=$1", str(self.user_id))
+        finally:
+            await release_conn(conn)
+
+        new_wallet    = updated["balance"] if updated else 0
+        vault_balance = vault_row["vault_balance"] if vault_row else amount
+
+        embed = _vault_embed(interaction.user, new_wallet, vault_balance)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class VaultWithdrawModal(discord.ui.Modal, title="Withdraw from Vault"):
+    amount = discord.ui.TextInput(label="Enter amount")
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.amount.value.replace(",", "").replace("_", ""))
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Amount must be positive.", ephemeral=True)
+            return
+
+        conn = await get_conn()
+        try:
+            vault_row = await conn.fetchrow("SELECT vault_balance FROM vaults WHERE user_id=$1", str(self.user_id))
+            vault_balance = vault_row["vault_balance"] if vault_row else 0
+
+            if amount > vault_balance:
+                await interaction.response.send_message("❌ Not enough in vault.", ephemeral=True)
+                return
+
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE vaults SET vault_balance = vault_balance - $1 WHERE user_id = $2",
+                    amount, str(self.user_id)
+                )
+                await update_balance(conn, self.user_id, amount)
+                await log_transaction(conn, self.user_id, "vault_withdraw", amount, "withdrawn from vault")
+
+            updated  = await get_user(conn, self.user_id)
+            new_vault_row = await conn.fetchrow("SELECT vault_balance FROM vaults WHERE user_id=$1", str(self.user_id))
+        finally:
+            await release_conn(conn)
+
+        new_wallet = updated["balance"] if updated else 0
+        new_vault  = new_vault_row["vault_balance"] if new_vault_row else 0
+
+        embed = _vault_embed(interaction.user, new_wallet, new_vault)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class VaultPasswordModal(discord.ui.Modal, title="Create Vault Password"):
+    password = discord.ui.TextInput(label="Enter a password")
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        conn = await get_conn()
+        try:
+            await conn.execute(
+                """INSERT INTO vaults (user_id, password)
+                   VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE SET password = $2""",
+                str(self.user_id), self.password.value
+            )
+        finally:
+            await release_conn(conn)
+        await interaction.response.send_message(
+            "🔐 Vault created! Use `/vault` again to log in.", ephemeral=True)
+
+class VaultLoginModal(discord.ui.Modal, title="Unlock Vault"):
+    password = discord.ui.TextInput(label="Enter password")
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        conn = await get_conn()
+        try:
+            vault_row = await conn.fetchrow(
+                "SELECT password, vault_balance FROM vaults WHERE user_id=$1", str(self.user_id))
+            if not vault_row:
+                await interaction.response.send_message("❌ Vault not found.", ephemeral=True)
+                return
+            if self.password.value != vault_row["password"]:
+                await interaction.response.send_message("❌ Wrong password.", ephemeral=True)
+                return
+            user_row = await get_user(conn, self.user_id)
+        finally:
+            await release_conn(conn)
+
+        wallet        = user_row["balance"] if user_row else 0
+        vault_balance = vault_row["vault_balance"]
+
+        embed = _vault_embed(interaction.user, wallet, vault_balance)
+        await interaction.response.send_message(embed=embed, view=VaultView(self.user_id), ephemeral=True)
+
+@bot.tree.command(name="vault", description="Open your secure vault")
+async def cmd_vault(interaction: discord.Interaction):
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow("SELECT user_id FROM vaults WHERE user_id=$1", str(interaction.user.id))
+    finally:
+        await release_conn(conn)
+
+    if not row:
+        await interaction.response.send_modal(VaultPasswordModal(interaction.user.id))
+    else:
+        await interaction.response.send_modal(VaultLoginModal(interaction.user.id))
 if __name__ == "__main__":
     if not TOKEN:
         print("[BOT] ❌ No TOKEN set — add TOKEN to your environment variables.")
