@@ -95,7 +95,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.55  # 55/45 edge across all games
+BOT_HOUSE_WIN        = 0.54  # 54/46 edge across all games
 BJ_DEALER_STAND      = 18   # Dealer stands at this total — 18 gives ~7% house edge
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -5863,48 +5863,6 @@ class BlackjackView(BaseGameView):
         except Exception as e:
             print(f'[BJ RESULT FAILED] {e}')
 
-        # ── Random gem drop to random members on BJ win ──────────────────────
-        if won:
-            try:
-                _bj_guild = interaction.guild or bot.get_guild(GUILD_ID)
-                if _bj_guild:
-                    _eligible = [
-                        m for m in _bj_guild.members
-                        if not m.bot and m.id != self.creator.id
-                    ]
-                    if _eligible:
-                        _drop_count  = random.randint(1, min(3, len(_eligible)))
-                        _drop_amount = random.randint(
-                            max(1_000, total_bet // 20),
-                            max(10_000, total_bet // 5)
-                        )
-                        _winners = random.sample(_eligible, _drop_count)
-                        _conn = await get_conn()
-                        try:
-                            for _m in _winners:
-                                await ensure_user(_conn, _m)
-                                await update_balance(_conn, _m.id, _drop_amount)
-                                await log_transaction(_conn, _m.id, "bj_gem_drop", _drop_amount)
-                        finally:
-                            await release_conn(_conn)
-
-                        _drop_mentions = ", ".join(m.mention for m in _winners)
-                        _drop_e = discord.Embed(
-                            color=C_WIN,
-                            title="💎  Gem Drop!",
-                            description=(
-                                f"**{self.creator.display_name}** won at Blackjack and triggered a gem drop!\n\n"
-                                f"🎉 {_drop_mentions}\n"
-                                f"each received **{format_amount(_drop_amount)}** 💎"
-                            )
-                        )
-                        _brand_embed(_drop_e)
-                        drop_ch = bot.get_channel(REWARD_LOG_ID) or interaction.channel
-                        if drop_ch:
-                            await drop_ch.send(embed=_drop_e)
-            except Exception as _drop_err:
-                print(f"[BJ GEM DROP ERROR] {_drop_err}")
-
         log_e = discord.Embed(title="♠️ Blackjack Result", color=color)
         log_e.add_field(name="Player",  value=self.creator.mention,        inline=True)
         log_e.add_field(name="Bet",     value=format_amount(total_bet),    inline=True)
@@ -7724,10 +7682,6 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
     _init_embed = view.game_embed()
     await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
-
-# main_part2.py — continuation of main_part1.py
-# This file contains the second half of commands (Mines, Case Battles, Vault, etc.)
-# Run this file directly; it imports all shared state from main_part1.
 
 MINES_MAX_MULT  = 5000.0
 MINES_GRID_SIZE = 25
