@@ -95,7 +95,7 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.525 # 52/48 edge across all games
+BOT_HOUSE_WIN        = 0.55  # 55/45 edge across all games
 BJ_DEALER_STAND      = 18   # Dealer stands at this total — 18 gives ~7% house edge
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
@@ -5452,7 +5452,7 @@ class BaccaratView(BaseGameView):
         elif _bac_forced == "lose":
             player_bet_wins = False
         else:
-            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 48% player wins
+            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 45% player wins
 
         if bet_type == "Tie":
             winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
@@ -6967,7 +6967,7 @@ class HiloView(BaseGameView):
             elif _hilo_forced == "lose":
                 player_wins = False
             else:
-                player_wins = random.random() >= BOT_HOUSE_WIN  # 48% player wins
+                player_wins = random.random() >= BOT_HOUSE_WIN  # 45% player wins
 
             if direction == "higher":
                 valid_win  = list(range(prev_rank + 1, 14))
@@ -7725,6 +7725,11 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
     await interaction.response.send_message(embed=_init_embed, view=view)
     view._original_message = await interaction.original_response()
 
+# main_part2.py — continuation of main_part1.py
+# This file contains the second half of commands (Mines, Case Battles, Vault, etc.)
+# Run this file directly; it imports all shared state from main_part1.
+from main_part1 import *
+
 MINES_MAX_MULT  = 5000.0
 MINES_GRID_SIZE = 25
 
@@ -7764,19 +7769,25 @@ def mines_calc_mult(mines: int, gems_found: int) -> float:
 MINES_HOUSE_WIN = 0.99   # kept for admin panel reference only — rig is now deterministic
 
 def mines_generate_grid(mines: int, force_win: bool = False) -> list:
-    """Generate initial grid. Rigging happens per-click in MinesView._pick."""
+    """Generate initial grid. Rigging happens per-click in MinesView._pick.
+    Initial grid pre-biases bombs toward the center for extra rigging."""
     grid = ["gem"] * MINES_GRID_SIZE
     if force_win:
         bomb_positions = list(range(MINES_GRID_SIZE - mines, MINES_GRID_SIZE))
     else:
-        bomb_positions = random.sample(range(MINES_GRID_SIZE), mines)
+        # Pre-bias: sort tiles by distance from center (tile 12), place bombs closest first
+        def center_dist(idx):
+            r, c = divmod(idx, 5)
+            return abs(r - 2) + abs(c - 2)
+        tiles_sorted = sorted(range(MINES_GRID_SIZE), key=center_dist)
+        bomb_positions = tiles_sorted[:mines]
     for i in bomb_positions:
         grid[i] = "bomb"
     return grid
 
 def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
     """
-    Maximum rigging — deterministic bomb placement.
+    MAXIMUM rigging — deterministic bomb placement.
     Bombs are placed directly on the tiles immediately adjacent to the last click first,
     then fill outward. No randomness — the next tile the player clicks is almost
     guaranteed to be a bomb.
@@ -7965,6 +7976,10 @@ class MinesView(BaseGameView):
                 tile = "gem"   # always safe
             elif _mn_forced == "lose":
                 tile = "bomb"  # always explode
+            else:
+                # Always rig board BEFORE evaluating the click — bombs cluster toward clicked tile
+                self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
+                tile = self.grid[index]
 
             if tile == "bomb":
                 self.done = True
@@ -7998,10 +8013,6 @@ class MinesView(BaseGameView):
             else:
                 self.revealed.add(index)
                 self.gems_found += 1
-
-                # Always rig board after every safe click — bombs cluster toward next likely tile
-                if not self.done:
-                    self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
 
                 gems_total = MINES_GRID_SIZE - self.mines
 
@@ -8704,8 +8715,8 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:
-        # 48% player wins, 52% house wins
-        if random.random() < 0.48:
+        # 45% player wins, 55% house wins
+        if random.random() < 0.45:
             winner_idx = chosen  # player's horse wins
         else:
             loser_horses = [i for i in range(4) if i != chosen]
@@ -12249,7 +12260,7 @@ class HouseEdgeGameView(discord.ui.View):
 
             if g == "Coinflip / Dice / War / Baccarat":
                 BOT_HOUSE_WIN = 0.5 + edge_val / 2
-                msg = f"Updated. New setting: `{BOT_HOUSE_WIN:.4f}`"
+                msg = f"Updated. New setting: `{BOT_HOUSE_WIN:.4f}` (was 0.5500)"
 
             elif g == "Roulette":
                 target_ev = 1 - edge_val
