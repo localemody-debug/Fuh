@@ -7728,7 +7728,6 @@ async def cmd_rps(interaction: discord.Interaction, bet: str):
 # main_part2.py — continuation of main_part1.py
 # This file contains the second half of commands (Mines, Case Battles, Vault, etc.)
 # Run this file directly; it imports all shared state from main_part1.
-from main_part1 import *
 
 MINES_MAX_MULT  = 5000.0
 MINES_GRID_SIZE = 25
