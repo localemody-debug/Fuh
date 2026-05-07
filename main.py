@@ -95,8 +95,19 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.54  # 54/46 edge across all games
-BJ_DEALER_STAND      = 18   # Dealer stands at this total — 18 gives ~7% house edge
+BOT_HOUSE_WIN        = 0.53  # fallback only — each game now uses its own edge constant
+HOUSE_WIN_COINFLIP   = 0.56  # 56% house — coinflip is PvP-taxed, keep edge moderate
+HOUSE_WIN_PROGCF     = 0.58  # 58% house — progressive pots grow fast, needs more edge
+HOUSE_WIN_ROULETTE   = 0.55  # 55% house — roulette already has multiple outcomes
+HOUSE_WIN_BACCARAT   = 0.57  # 57% house — baccarat, stacks with the 3% hard-flip below
+HOUSE_WIN_WAR        = 0.60  # 60% house — war is pure luck, highest edge
+HOUSE_WIN_HILO       = 0.55  # 55% house — hilo players feel skill-based, softer edge
+BJ_DEALER_STAND      = 18   # Dealer stands at this total — overridden per-game by random 17-19
+
+def bj_dealer_stand_threshold() -> int:
+    """Randomize the dealer's stand threshold between 17 and 19 each hand.
+    17 = slightly player-friendly, 18 = baseline, 19 = heavily house-favored."""
+    return random.randint(17, 19)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -4084,7 +4095,7 @@ class CoinflipView(BaseGameView):
         msg = self._original_message
 
         if self.vs_bot:
-            bot_wins    = random.random() < get_dynamic_house_win(self.creator.id)
+            bot_wins    = random.random() < HOUSE_WIN_COINFLIP
             result      = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
             creator_won = result == self.choice
         else:
@@ -4240,7 +4251,7 @@ class ProgressiveCoinflipView(BaseGameView):
 
         await interaction.response.defer()
 
-        bot_wins = random.random() < get_dynamic_house_win(self.creator.id, self.current_pot)
+        bot_wins = random.random() < HOUSE_WIN_PROGCF
         if bot_wins:
             result = "Tails" if guess == "Heads" else "Heads"
         else:
@@ -5113,9 +5124,8 @@ class RouletteView(BaseGameView):
                 (e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name
             )
         else:
-            house_wins = random.random() < BOT_HOUSE_WIN
+            house_wins = random.random() < HOUSE_WIN_ROULETTE
             if house_wins:
-                losing_outcomes = [(e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name]
                 result_emoji, result_name, result_multi = random.choice(losing_outcomes)
             else:
                 result_emoji, result_name, result_multi = next(
@@ -5452,7 +5462,7 @@ class BaccaratView(BaseGameView):
         elif _bac_forced == "lose":
             player_bet_wins = False
         else:
-            player_bet_wins = random.random() >= BOT_HOUSE_WIN  # 45% player wins
+            player_bet_wins = random.random() >= HOUSE_WIN_BACCARAT  # custom baccarat edge
 
         if bet_type == "Tie":
             winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
@@ -5715,6 +5725,7 @@ class BlackjackView(BaseGameView):
         self.extra_bet          = 0    # tracks double-down extra bet
         self._bet_deducted      = False  # guard so we only deduct the initial bet once
         self._original_message  = None
+        self._dealer_stand      = bj_dealer_stand_threshold()  # random 17-19 per hand
 
     def game_embed(self, hide_dealer=True) -> discord.Embed:
         pt          = bj_total(self.player_hand)
@@ -5779,7 +5790,7 @@ class BlackjackView(BaseGameView):
 
         # Skip dealer draw if player busted
         if pt <= 21:
-            while bj_total(self.dealer_hand) < BJ_DEALER_STAND:
+            while bj_total(self.dealer_hand) < self._dealer_stand:
                 self.dealer_hand.append(self.deck.pop())
                 await asyncio.sleep(0.5)
                 try:
@@ -6125,6 +6136,7 @@ class BlackjackDiceView(BaseGameView):
         self.extra_bet       = 0
         self._bet_deducted   = False
         self._original_message = None
+        self._dealer_stand   = bj_dealer_stand_threshold()  # random 17-19 per hand
 
     def game_embed(self, hide_dealer=True) -> discord.Embed:
         pt        = bjd_total(self.player_dice)
@@ -6175,7 +6187,7 @@ class BlackjackDiceView(BaseGameView):
 
         # Skip dealer draw if player already busted
         if pt <= 21:
-            while bjd_total(self.dealer_dice) < 17:
+            while bjd_total(self.dealer_dice) < self._dealer_stand:
                 self.dealer_dice.append(bjd_roll())
                 await asyncio.sleep(0.4)
                 try:
@@ -6570,7 +6582,7 @@ class WarView(BaseGameView):
         opponent_name  = "🤖 Bot" if self.vs_bot else self.opponent.display_name
 
         if self.vs_bot:
-            bot_wins = random.random() < get_dynamic_house_win(self.creator.id)
+            bot_wins = random.random() < HOUSE_WIN_WAR
             for _ in range(50):
                 creator_card  = war_card()
                 opponent_card = war_card()
@@ -6925,7 +6937,7 @@ class HiloView(BaseGameView):
             elif _hilo_forced == "lose":
                 player_wins = False
             else:
-                player_wins = random.random() >= BOT_HOUSE_WIN  # 45% player wins
+                player_wins = random.random() >= HOUSE_WIN_HILO  # custom hilo edge
 
             if direction == "higher":
                 valid_win  = list(range(prev_rank + 1, 14))
@@ -7742,8 +7754,9 @@ def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) ->
     """
     MAXIMUM rigging — deterministic bomb placement.
     Bombs are placed directly on the tiles immediately adjacent to the last click first,
-    then fill outward. No randomness — the next tile the player clicks is almost
-    guaranteed to be a bomb.
+    then fill outward. Tiles within manhattan distance ≤ 2 of the cursor get an
+    extra priority boost, making the entire surrounding area near-lethal.
+    No randomness — the next tile the player clicks is almost guaranteed to be a bomb.
     """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
     if len(unrevealed) <= mines:
@@ -7751,13 +7764,13 @@ def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) ->
 
     r_c, c_c = divmod(last_clicked, 5)
 
-    # Sort ALL unrevealed tiles by manhattan distance from last click (closest first)
-    # Ties broken by center proximity so bombs fill the most-likely-clicked tiles
     def sort_key(idx):
         r, c = divmod(idx, 5)
         dist_from_click  = abs(r - r_c) + abs(c - c_c)
         dist_from_center = abs(r - 2) + abs(c - 2)
-        return (dist_from_click, dist_from_center)
+        # Tiles within dist ≤ 2 of last click get pulled to the front
+        close_bonus = 0 if dist_from_click <= 2 else 20
+        return (close_bonus + dist_from_click, dist_from_center)
 
     sorted_unrevealed = sorted(unrevealed, key=sort_key)
     # Skip dist==0 (the tile just clicked — already revealed)
@@ -8163,7 +8176,7 @@ def scratch_generate(force_win: bool = False, force_lose: bool = False) -> list:
     """
     if force_win:        win = True
     elif force_lose:     win = False
-    else:                win = random.random() < 0.2325  # 23.25% win rate → 7% edge
+    else:                win = random.random() < 0.20  # 20% win rate → ~10% house edge
 
     if win:
         winner = random.choices(SCRATCH_EMOJIS, weights=SCRATCH_WEIGHTS, k=1)[0]
@@ -8668,8 +8681,8 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:
-        # 45% player wins, 55% house wins
-        if random.random() < 0.45:
+        # 40% player wins, 60% house wins
+        if random.random() < 0.40:
             winner_idx = chosen  # player's horse wins
         else:
             loser_horses = [i for i in range(4) if i != chosen]
@@ -12209,11 +12222,25 @@ class HouseEdgeGameView(discord.ui.View):
     def _make_callback(self, edge_val: float, label: str):
         async def callback(interaction: discord.Interaction):
             global BOT_HOUSE_WIN, BOT_HOUSE_WIN_CD, HORSE_PAYOUT, ROULETTE_OUTCOMES
+            global HOUSE_WIN_COINFLIP, HOUSE_WIN_PROGCF, HOUSE_WIN_ROULETTE
+            global HOUSE_WIN_BACCARAT, HOUSE_WIN_WAR, HOUSE_WIN_HILO
             g = self.game
 
             if g == "Coinflip / Dice / War / Baccarat":
-                BOT_HOUSE_WIN = 0.5 + edge_val / 2
-                msg = f"Updated. New setting: `{BOT_HOUSE_WIN:.4f}` (was 0.5500)"
+                # Update each game's dedicated constant
+                HOUSE_WIN_COINFLIP = round(0.5 + edge_val / 2, 4)
+                HOUSE_WIN_WAR      = round(min(0.99, 0.5 + edge_val / 2 + 0.04), 4)  # war stays 4% above coinflip
+                HOUSE_WIN_BACCARAT = round(0.5 + edge_val / 2 + 0.01, 4)             # baccarat 1% above coinflip
+                globals().update({
+                    "HOUSE_WIN_COINFLIP": HOUSE_WIN_COINFLIP,
+                    "HOUSE_WIN_WAR": HOUSE_WIN_WAR,
+                    "HOUSE_WIN_BACCARAT": HOUSE_WIN_BACCARAT,
+                })
+                BOT_HOUSE_WIN = 0.5 + edge_val / 2  # keep fallback in sync
+                msg = (f"Updated per-game.\n"
+                       f"Coinflip: `{HOUSE_WIN_COINFLIP:.4f}` | "
+                       f"War: `{HOUSE_WIN_WAR:.4f}` | "
+                       f"Baccarat: `{HOUSE_WIN_BACCARAT:.4f}`")
 
             elif g == "Roulette":
                 target_ev = 1 - edge_val
