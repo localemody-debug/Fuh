@@ -96,12 +96,12 @@ OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
 BOT_HOUSE_WIN        = 0.53  # fallback only — each game now uses its own edge constant
-HOUSE_WIN_COINFLIP   = 0.56  # 56% house — coinflip is PvP-taxed, keep edge moderate
-HOUSE_WIN_PROGCF     = 0.58  # 58% house — progressive pots grow fast, needs more edge
-HOUSE_WIN_ROULETTE   = 0.55  # 55% house — roulette already has multiple outcomes
-HOUSE_WIN_BACCARAT   = 0.57  # 57% house — baccarat, stacks with the 3% hard-flip below
-HOUSE_WIN_WAR        = 0.60  # 60% house — war is pure luck, highest edge
-HOUSE_WIN_HILO       = 0.55  # 55% house — hilo players feel skill-based, softer edge
+HOUSE_WIN_COINFLIP   = 0.53  # coinflip
+HOUSE_WIN_PROGCF     = 0.53  # progressive coinflip
+HOUSE_WIN_ROULETTE   = 0.53  # roulette
+HOUSE_WIN_BACCARAT   = 0.53  # baccarat
+HOUSE_WIN_WAR        = 0.53  # war
+HOUSE_WIN_HILO       = 0.53  # hilo
 BJ_DEALER_STAND      = 18   # Dealer stands at this total — overridden per-game by random 17-19
 
 def bj_dealer_stand_threshold() -> int:
@@ -4095,8 +4095,14 @@ class CoinflipView(BaseGameView):
         msg = self._original_message
 
         if self.vs_bot:
-            bot_wins    = random.random() < HOUSE_WIN_COINFLIP
-            result      = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
+            forced = _force_result.pop(self.creator.id, None)
+            if forced == "win":
+                result = self.choice
+            elif forced == "lose":
+                result = "Tails" if self.choice == "Heads" else "Heads"
+            else:
+                bot_wins = random.random() < HOUSE_WIN_COINFLIP
+                result   = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
             creator_won = result == self.choice
         else:
             forced = _force_result.pop(self.creator.id, None)
@@ -4251,11 +4257,14 @@ class ProgressiveCoinflipView(BaseGameView):
 
         await interaction.response.defer()
 
-        bot_wins = random.random() < HOUSE_WIN_PROGCF
-        if bot_wins:
+        forced = _force_result.pop(self.creator.id, None)
+        if forced == "win":
+            result = guess
+        elif forced == "lose":
             result = "Tails" if guess == "Heads" else "Heads"
         else:
-            result = guess
+            bot_wins = random.random() < HOUSE_WIN_PROGCF
+            result   = ("Tails" if guess == "Heads" else "Heads") if bot_wins else guess
         won = (result == guess)
 
         coin_gif     = COINFLIP_HEADS_GIF if result == "Heads" else COINFLIP_TAILS_GIF
@@ -4526,6 +4535,8 @@ class DiceGameState:
         self.round_rolls    = {}        # {user_id: roll_value}
         self.round_num      = 0
         self.done           = False
+        self._resolving     = False     # guard against double-resolve when both roll simultaneously
+        self._roll_lock     = asyncio.Lock()  # serialise concurrent /roll calls
 
     def pot(self) -> int:
         return self.bet * 2
@@ -4796,39 +4807,61 @@ async def _process_dice_roll(state: DiceGameState, roller: discord.User,
                               channel: discord.abc.Messageable,
                               interaction: discord.Interaction = None):
     """Handle a /roll from one player. Sends roll result, resolves round if both rolled."""
-    roll = random.randint(1, 6)
-    state.round_rolls[roller.id] = roll
-    state.waiting_roll.discard(roller.id)
+    async with state._roll_lock:
+        # Re-check inside the lock — another roll may have already processed this player
+        if roller.id not in state.waiting_roll:
+            if interaction:
+                await interaction.followup.send("❌ You've already rolled this round.", ephemeral=True)
+            return
 
-    dice_emoji = DICE_EMOJIS[roll - 1] if roll - 1 < len(DICE_EMOJIS) else str(roll)
-    roll_gif   = get_dice_gif(roll)
+        roll = random.randint(1, 6)
+        state.round_rolls[roller.id] = roll
+        state.waiting_roll.discard(roller.id)
 
-    # Ping the other player if they still need to roll
-    other = state.opponent if roller.id == state.creator.id else state.creator
-    needs_roll = other and other.id in state.waiting_roll
+        dice_emoji = DICE_EMOJIS[roll - 1] if roll - 1 < len(DICE_EMOJIS) else str(roll)
+        roll_gif   = get_dice_gif(roll)
 
-    roll_embed = discord.Embed(
-        title=f"🎲  {roller.display_name} Rolled a {roll}!",
-        description=f"{other.mention} Use `/roll` now!" if needs_roll else None,
-        color=C_GOLD,
-    )
-    roll_embed.set_footer(text="🔒 100% Cryptographically Random | Provably Fair")
+        # Ping the other player if they still need to roll
+        other = state.opponent if roller.id == state.creator.id else state.creator
+        needs_roll = other and other.id in state.waiting_roll
 
-    if interaction is not None:
-        plain = await interaction.followup.send(embed=roll_embed)
-    else:
-        plain = await channel.send(embed=roll_embed)
+        roll_embed = discord.Embed(
+            title=f"🎲  {roller.display_name} Rolled a {roll}!",
+            description=f"{other.mention} Use `/roll` now!" if needs_roll else None,
+            color=C_GOLD,
+        )
+        roll_embed.set_footer(text="🔒 100% Cryptographically Random | Provably Fair")
 
-    await asyncio.sleep(0.3)
-    if roll_gif:
-        roll_embed.set_image(url=roll_gif)
-    try:
-        await plain.edit(embed=roll_embed)
-    except Exception as e:
-        print(f"[ROLL GIF EDIT] {e}")
+        if interaction is not None:
+            plain = await interaction.followup.send(embed=roll_embed)
+        else:
+            plain = await channel.send(embed=roll_embed)
 
-    if not state.waiting_roll and state.opponent and state.creator.id in state.round_rolls and state.opponent.id in state.round_rolls:
-        await _resolve_dice_round(state, channel)
+        await asyncio.sleep(0.3)
+        if roll_gif:
+            roll_embed.set_image(url=roll_gif)
+        try:
+            await plain.edit(embed=roll_embed)
+        except Exception as e:
+            print(f"[ROLL GIF EDIT] {e}")
+
+        # Only resolve once — when both have rolled and we're not already resolving
+        both_rolled = (
+            state.opponent is not None
+            and state.creator.id in state.round_rolls
+            and state.opponent.id in state.round_rolls
+            and not state.waiting_roll
+        )
+        should_resolve = both_rolled and not state._resolving
+        if should_resolve:
+            state._resolving = True
+
+    # Resolve outside the lock so it can send messages freely
+    if should_resolve:
+        try:
+            await _resolve_dice_round(state, channel)
+        finally:
+            state._resolving = False
 
 async def _resolve_dice_round(state: DiceGameState, channel: discord.abc.Messageable):
     """Resolve one round after both players have rolled."""
@@ -4851,6 +4884,7 @@ async def _resolve_dice_round(state: DiceGameState, channel: discord.abc.Message
         await channel.send(embed=tie_embed)
         state.waiting_roll = {state.creator.id, state.opponent.id}
         state.round_rolls  = {}
+        state._resolving   = False
         return
 
     if state.mode == "normal":
@@ -4882,8 +4916,8 @@ async def _resolve_dice_round(state: DiceGameState, channel: discord.abc.Message
         try:
             payout = await apply_win_payout(conn, winner.id, pot, state.bet, "dice")
             profit = payout - state.bet
-            await record_game(conn, winner.id, True,  state.bet, payout, "dice")
-            await record_game(conn, loser.id,  False, state.bet, 0,      "dice")
+            await record_game(conn, winner.id, True,  pot, payout, "dice")
+            await record_game(conn, loser.id,  False, pot, 0,      "dice")
             await log_transaction(conn, winner.id, "dice_win",  profit)
             await log_transaction(conn, loser.id,  "dice_loss", -state.bet)
             for uid in [winner.id, loser.id]:
@@ -4926,6 +4960,7 @@ async def _resolve_dice_round(state: DiceGameState, channel: discord.abc.Message
         state.round_num   += 1
         state.waiting_roll = {state.creator.id, state.opponent.id}
         state.round_rolls  = {}
+        state._resolving   = False
         round_embed = discord.Embed(
             title=f"🎲  Round {state.round_num - 1} Result",
             color=C_WIN,
@@ -5787,6 +5822,7 @@ class BlackjackView(BaseGameView):
         self.stop()
 
         pt = bj_total(self.player_hand)
+        _bj_forced = _force_result.pop(self.creator.id, None)
 
         # Skip dealer draw if player busted
         if pt <= 21:
@@ -5803,6 +5839,12 @@ class BlackjackView(BaseGameView):
         dt        = bj_total(self.dealer_hand)
         player_bj = is_blackjack(self.player_hand) and self.extra_bet == 0
         dealer_bj = is_blackjack(self.dealer_hand)
+
+        # Apply force override: bust dealer for win, bust player for loss
+        if _bj_forced == "win" and pt <= 21:
+            dt = 22   # dealer busts
+        elif _bj_forced == "lose" and pt <= 21:
+            pt = 22   # player busts
 
         if pt > 21:
             result, payout, color = "BUST", 0, C_LOSS
@@ -6184,6 +6226,7 @@ class BlackjackDiceView(BaseGameView):
         self.stop()
 
         pt = bjd_total(self.player_dice)
+        _bjd_forced = _force_result.pop(self.creator.id, None)
 
         # Skip dealer draw if player already busted
         if pt <= 21:
@@ -6199,6 +6242,12 @@ class BlackjackDiceView(BaseGameView):
         total_bet = self.bet + self.extra_bet
         dt = bjd_total(self.dealer_dice)
         player_bj = bjd_is_blackjack(self.player_dice) and self.extra_bet == 0
+
+        # Apply force override
+        if _bjd_forced == "win" and pt <= 21:
+            dt = 22   # dealer busts
+        elif _bjd_forced == "lose" and pt <= 21:
+            pt = 22   # player busts
 
         if pt > 21:
             result, payout, color = f"Bust! {pt}", 0, C_LOSS
@@ -6558,8 +6607,7 @@ class WarView(BaseGameView):
         await super().on_timeout()
 
     async def _resolve(self, interaction: discord.Interaction):
-        if not interaction.response.is_done():
-            msg = self._original_message
+        msg = self._original_message
         try:
             await msg.edit(embed=discord.Embed(color=C_GOLD, description="## ⚔️  WAR\n> Drawing cards..."), view=None)
         except Exception as e:
@@ -8176,7 +8224,7 @@ def scratch_generate(force_win: bool = False, force_lose: bool = False) -> list:
     """
     if force_win:        win = True
     elif force_lose:     win = False
-    else:                win = random.random() < 0.20  # 20% win rate → ~10% house edge
+    else:                win = random.random() < 0.2325  # 23.25% win rate → 7% edge
 
     if win:
         winner = random.choices(SCRATCH_EMOJIS, weights=SCRATCH_WEIGHTS, k=1)[0]
@@ -8681,8 +8729,8 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:
-        # 40% player wins, 60% house wins
-        if random.random() < 0.40:
+        # 47% player wins, 53% house wins
+        if random.random() < 0.47:
             winner_idx = chosen  # player's horse wins
         else:
             loser_horses = [i for i in range(4) if i != chosen]
@@ -8797,11 +8845,18 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
                 if row and member:
                     await update_user_rank(member, row["wagered"])
         except Exception as e:
-            print(f"[HORSERACE] DB error, refunding bet: {e}")
-            try:
-                await update_balance(conn, interaction.user.id, amt)
-            except Exception as _re:
-                print(f"[HORSERACE] Refund also failed: {_re}")
+            print(f"[HORSERACE] DB error: {e}")
+            # Only refund if the win payout hasn't already been credited
+            if not won or payout == 0:
+                try:
+                    refund_conn = await get_conn()
+                    try:
+                        await update_balance(refund_conn, interaction.user.id, amt)
+                        print(f"[HORSERACE] Refunded {amt} to {interaction.user.id}")
+                    finally:
+                        await release_conn(refund_conn)
+                except Exception as _re:
+                    print(f"[HORSERACE] Refund also failed: {_re}")
         finally:
             await release_conn(conn)
 
@@ -9647,12 +9702,19 @@ class ColorDiceView(BaseGameView):
 
         slots = cd_roll_slots()
         count = cd_count(slots, chosen_name)
-        if count == 1 and random.random() < BOT_HOUSE_WIN:
-            attempts = 0
-            while count == 1 and attempts < 50:
-                slots = cd_roll_slots()
-                count = cd_count(slots, chosen_name)
-                attempts += 1
+
+        _cd_forced = _force_result.pop(self.creator.id, None)
+        if _cd_forced == "win":
+            count = 1   # exactly one match = win
+        elif _cd_forced == "lose":
+            count = 0   # zero matches = loss
+        else:
+            if count == 1 and random.random() < BOT_HOUSE_WIN:
+                attempts = 0
+                while count == 1 and attempts < 50:
+                    slots = cd_roll_slots()
+                    count = cd_count(slots, chosen_name)
+                    attempts += 1
 
         outcome = "win" if count == 1 else ("tie" if count >= 2 else "loss")
         payout  = int(self.bet * 2) if outcome == "win" else (self.bet if outcome == "tie" else 0)
