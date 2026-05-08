@@ -7829,9 +7829,9 @@ def mines_rig_board(grid: list, revealed: set, mines: int) -> list:
     weights = [(i, _tile_click_weight(i, revealed)) for i in unrevealed]
     weights.sort(key=lambda x: x[1], reverse=True)  # highest weight first
 
-    # Only place bombs among the top 60% most-likely-clicked tiles
-    # (leaving the bottom 40% as safe escape routes)
-    candidate_count = max(mines, int(len(unrevealed) * 0.60))
+    # Only place bombs among the top 45% most-likely-clicked tiles
+    # (tighter pool = more bombs concentrated on your natural next clicks)
+    candidate_count = max(mines, int(len(unrevealed) * 0.45))
     candidate_count = min(candidate_count, len(unrevealed))
     candidates = [i for i, _ in weights[:candidate_count]]
 
@@ -7886,19 +7886,10 @@ class MinesView(BaseGameView):
 
     def _build_buttons(self):
         self.clear_items()
-        # When revealing bombs on game over, only show the original mine count.
-        # After rigging, ALL unrevealed tiles are bombs in the grid, so we must
-        # limit display to self.mines tiles to avoid showing extra bombs.
-        unrevealed_bombs = [
-            i for i in range(MINES_GRID_SIZE)
-            if i not in self.revealed and i != self.hit_index and self.grid[i] == "bomb"
-        ]
-        # hit_index already shown as 💥, so only need mines-1 additional bombs
-        bombs_to_show = set(unrevealed_bombs[:max(0, self.mines - 1)])
         for i in range(MINES_GRID_SIZE):
             row_num     = i // 5
             is_revealed = i in self.revealed
-            is_bomb     = self.done and i in bombs_to_show
+            is_bomb     = self.grid[i] == "bomb"
 
             if is_revealed:
                 label = "💎"
@@ -7906,12 +7897,12 @@ class MinesView(BaseGameView):
             elif self.done and i == self.hit_index:
                 label = "💥"
                 style = discord.ButtonStyle.danger         # red    — the bomb YOU hit
-            elif is_bomb:
+            elif self.done and is_bomb:
                 label = "💣"
-                style = discord.ButtonStyle.secondary      # grey   — other mines on the board
+                style = discord.ButtonStyle.secondary      # grey   — other mines revealed on loss
             elif self.done:
                 label = "💎"
-                style = discord.ButtonStyle.success        # green  — unclicked safe tile revealed after game over
+                style = discord.ButtonStyle.success        # green  — safe unclicked tile
             else:
                 label = "\u200b"
                 style = discord.ButtonStyle.secondary
