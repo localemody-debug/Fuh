@@ -95,19 +95,44 @@ STAFF_ROLE_NAME      = "Moderator"
 OWNER_ROLE_NAME      = "Owner"
 MANAGER_ROLE_NAME    = "Manager"
 TMOD_ROLE_NAME       = "t-Mod"
-BOT_HOUSE_WIN        = 0.53  # fallback only — each game now uses its own edge constant
-HOUSE_WIN_COINFLIP   = 0.53  # coinflip
-HOUSE_WIN_PROGCF     = 0.53  # progressive coinflip
-HOUSE_WIN_ROULETTE   = 0.53  # roulette
-HOUSE_WIN_BACCARAT   = 0.53  # baccarat
-HOUSE_WIN_WAR        = 0.53  # war
-HOUSE_WIN_HILO       = 0.53  # hilo
-BJ_DEALER_STAND      = 18   # Dealer stands at this total — overridden per-game by random 17-19
+BOT_HOUSE_WIN        = 0.515  # fallback — updated to match new random range midpoint
+
+# All games: house edge randomly selected per round from 49%–54%.
+# Applied to every outcome-determining random call across all games.
+_HOUSE_EDGE_RANGES = {
+    "coinflip":   (0.49, 0.54),
+    "progcf":     (0.49, 0.54),
+    "roulette":   (0.49, 0.54),
+    "baccarat":   (0.49, 0.54),
+    "war":        (0.49, 0.54),
+    "hilo":       (0.49, 0.54),
+    "horserace":  (0.49, 0.54),
+    "scratch":    (0.49, 0.54),
+    "colordice":  (0.49, 0.54),
+    "blackjack":  (0.49, 0.54),
+    "rps":        (0.49, 0.54),
+    "upgrader":   (0.49, 0.54),
+    "balloon":    (0.49, 0.54),
+}
+
+def _rand_house_edge(game: str) -> float:
+    """Return a uniformly random house-win probability within the configured range."""
+    lo, hi = _HOUSE_EDGE_RANGES.get(game, (0.49, 0.54))
+    return random.uniform(lo, hi)
+
+# These module-level names are kept for admin panel / reference only.
+HOUSE_WIN_COINFLIP   = 0.515  # reference only
+HOUSE_WIN_PROGCF     = 0.515  # reference only
+HOUSE_WIN_ROULETTE   = 0.515  # reference only
+HOUSE_WIN_BACCARAT   = 0.515  # reference only
+HOUSE_WIN_WAR        = 0.515  # reference only
+HOUSE_WIN_HILO       = 0.515  # reference only
+BJ_DEALER_STAND      = 17   # Dealer stands at this total — overridden per-game by random 17-18
 
 def bj_dealer_stand_threshold() -> int:
-    """Randomize the dealer's stand threshold between 18 and 20 each hand.
-    18 = baseline, 19 = aggressive, 20 = heavily house-favored."""
-    return random.randint(18, 20)
+    """Randomize the dealer's stand threshold between 17 and 18 each hand.
+    17 = standard casino rules, 18 = slight house lean. Removed 19-20 which were too aggressive."""
+    return random.randint(17, 18)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -611,6 +636,15 @@ async def init_db():
                 suspended  BOOLEAN NOT NULL DEFAULT FALSE
             )
         """)
+        for _col, _def in [
+            ("total",     "BIGINT  NOT NULL DEFAULT 0"),
+            ("leaves",    "BIGINT  NOT NULL DEFAULT 0"),
+            ("suspended", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ]:
+            try:
+                await conn.execute(f"ALTER TABLE invites ADD COLUMN IF NOT EXISTS {_col} {_def}")
+            except Exception:
+                pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS pending_invites (
                 invitee_id  TEXT PRIMARY KEY,
@@ -1812,7 +1846,7 @@ async def on_guild_join(guild: discord.Guild):
     print(f"[BOT] Joined new guild: {guild.name} — roles and channels set up")
 
 # ===== INVITE SYSTEM =====
-# Tables (created in DB setup):
+# Tables:
 #   invites(user_id PK, total BIGINT, leaves BIGINT, suspended BOOLEAN)
 #   pending_invites(invitee_id PK, inviter_id, joined_at TIMESTAMPTZ)
 #   credited_invites(invitee_id PK, inviter_id, credited_at TIMESTAMPTZ)
@@ -1820,21 +1854,17 @@ async def on_guild_join(guild: discord.Guild):
 # Flow:
 #   on_invite_create/delete  → keep _invite_cache in sync
 #   on_member_join           → compare cache, insert pending_invites row
-#   _invite_check_loop       → every 60s, for each pending row:
-#                              check Member role + 90d account age + not suspended
-#                              → atomic payout + wager req + move to credited_invites
-#   on_member_remove         → increment leaves (pending or credited), DM inviter
+#   _invite_check_loop       → every 60s, credit valid pending invites
+#   on_member_remove         → increment leaves, DM inviter
 #   /invites                 → show stats
 #   /claiminvites            → show pending detail
 #   /inviteleaderboard       → top 10 by (total - leaves)
 
-INVITE_REWARD = 7_000_000       # gems per valid credited invite
-INVITE_WAGER_MULT = 1.5         # wager requirement multiplier on reward
-INVITE_MIN_AGE_DAYS = 90        # minimum Discord account age in days
+INVITE_REWARD       = 7_000_000   # gems per valid credited invite
+INVITE_WAGER_MULT   = 1.5         # wager requirement multiplier on reward
+INVITE_MIN_AGE_DAYS = 90          # minimum Discord account age in days
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
-# guild_id → {invite_code → use_count}
-# Populated on ready and kept in sync by on_invite_create/delete.
 
 @bot.event
 async def on_invite_create(invite: discord.Invite):
@@ -1875,7 +1905,6 @@ async def on_member_join(member: discord.Member):
     # ── Invite detection ──────────────────────────────────────────────────────
     old_cache = _invite_cache.get(guild.id)
 
-    # Fetch fresh invite list — abort cleanly if permission missing
     try:
         current_invites = await guild.invites()
     except discord.Forbidden:
@@ -1887,25 +1916,19 @@ async def on_member_join(member: discord.Member):
 
     current_map = {inv.code: (inv.uses or 0) for inv in current_invites}
 
-    # If cache was empty (first run / restart cache miss), seed it and skip
     if not old_cache:
         _invite_cache[guild.id] = current_map
         print(f"[INVITE] Cache was empty on join of {member.name} — seeded, join not tracked")
         return
 
-    # Find which invite was used (largest positive delta)
     used_invite = None
     best_delta  = 0
     for inv in current_invites:
         delta = current_map[inv.code] - old_cache.get(inv.code, 0)
-        if (delta > best_delta
-                and inv.inviter
-                and inv.inviter.id != member.id
-                and not inv.inviter.bot):
+        if delta > best_delta and inv.inviter and inv.inviter.id != member.id and not inv.inviter.bot:
             best_delta  = delta
             used_invite = inv
 
-    # Always update cache after comparison
     _invite_cache[guild.id] = current_map
 
     if not used_invite:
@@ -1937,42 +1960,31 @@ async def on_member_remove(member: discord.Member):
         inviter_id = None
         source     = None
 
-        # Check pending first
         pending = await conn.fetchrow(
-            "SELECT inviter_id FROM pending_invites WHERE invitee_id=$1",
-            str(member.id)
+            "SELECT inviter_id FROM pending_invites WHERE invitee_id=$1", str(member.id)
         )
         if pending:
             inviter_id = pending["inviter_id"]
             source     = "pending"
-            await conn.execute(
-                "DELETE FROM pending_invites WHERE invitee_id=$1", str(member.id)
-            )
+            await conn.execute("DELETE FROM pending_invites WHERE invitee_id=$1", str(member.id))
         else:
-            # Check already-credited invites
             credited = await conn.fetchrow(
-                "SELECT inviter_id FROM credited_invites WHERE invitee_id=$1",
-                str(member.id)
+                "SELECT inviter_id FROM credited_invites WHERE invitee_id=$1", str(member.id)
             )
             if credited:
                 inviter_id = credited["inviter_id"]
                 source     = "credited"
-                # Delete so a rejoin+leave doesn't double-count
-                await conn.execute(
-                    "DELETE FROM credited_invites WHERE invitee_id=$1", str(member.id)
-                )
+                await conn.execute("DELETE FROM credited_invites WHERE invitee_id=$1", str(member.id))
 
         if inviter_id:
             await conn.execute(
-                """INSERT INTO invites (user_id, leaves)
-                   VALUES ($1, 1)
+                """INSERT INTO invites (user_id, total, leaves, suspended)
+                   VALUES ($1, 0, 1, FALSE)
                    ON CONFLICT (user_id) DO UPDATE
                        SET leaves = invites.leaves + 1""",
                 inviter_id
             )
             print(f"[INVITE] {member.name} left ({source}) — leaves++ for {inviter_id}")
-
-            # DM the inviter so they know
             try:
                 inviter_user = bot.get_user(int(inviter_id)) or await bot.fetch_user(int(inviter_id))
                 dm = discord.Embed(
@@ -2001,20 +2013,16 @@ async def _invite_check_loop():
       2. Invitee has the Member role
       3. Invitee's Discord account is 90+ days old
       4. Inviter is not suspended
-    On pass: atomic payout + 1.5x wager req + move to credited_invites.
+    On pass: atomic payout + wager req + move to credited_invites.
     Sleep is at the BOTTOM so first check runs immediately on bot start.
     """
     await bot.wait_until_ready()
 
     while not bot.is_closed():
-
-        # ── Fetch pending rows (short-lived connection) ───────────────────
         try:
             lconn = await get_conn()
             try:
-                pending_rows = await lconn.fetch(
-                    "SELECT invitee_id, inviter_id FROM pending_invites"
-                )
+                pending_rows = await lconn.fetch("SELECT invitee_id, inviter_id FROM pending_invites")
             finally:
                 await release_conn(lconn)
         except Exception as e:
@@ -2039,25 +2047,21 @@ async def _invite_check_loop():
 
             conn = await get_conn()
             try:
-
-                # ── Guard: row still exists (another loop tick may have removed it)
+                # Guard: row still exists
                 still_pending = await conn.fetchval(
-                    "SELECT 1 FROM pending_invites WHERE invitee_id=$1",
-                    invitee_id_str
+                    "SELECT 1 FROM pending_invites WHERE invitee_id=$1", invitee_id_str
                 )
                 if not still_pending:
                     continue
 
-                # ── Check 1: Invitee still in guild ──────────────────────
+                # Check 1: Invitee still in guild
                 member = guild.get_member(invitee_id_int)
                 if member is None:
                     try:
                         member = await guild.fetch_member(invitee_id_int)
                     except discord.NotFound:
-                        # They left — on_member_remove handles leaves, just clean up
                         await conn.execute(
-                            "DELETE FROM pending_invites WHERE invitee_id=$1",
-                            invitee_id_str
+                            "DELETE FROM pending_invites WHERE invitee_id=$1", invitee_id_str
                         )
                         print(f"[INVITE LOOP] {invitee_id_str} not in guild — removed")
                         continue
@@ -2065,11 +2069,11 @@ async def _invite_check_loop():
                         print(f"[INVITE LOOP] fetch_member({invitee_id_str}) error: {e}")
                         continue
 
-                # ── Check 2: Member role ──────────────────────────────────
+                # Check 2: Member role
                 if not any(r.name == MEMBER_ROLE_NAME for r in member.roles):
                     continue
 
-                # ── Check 3: Account age ──────────────────────────────────
+                # Check 3: Account age
                 created = member.created_at
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
@@ -2078,42 +2082,38 @@ async def _invite_check_loop():
                     print(f"[INVITE LOOP] {member.name} only {age_days}d old — waiting")
                     continue
 
-                # ── Check 4: Inviter not suspended ────────────────────────
+                # Check 4: Inviter not suspended
                 inv_row = await conn.fetchrow(
-                    "SELECT suspended FROM invites WHERE user_id=$1",
-                    inviter_id_str
+                    "SELECT suspended FROM invites WHERE user_id=$1", inviter_id_str
                 )
                 if inv_row and inv_row["suspended"]:
                     print(f"[INVITE LOOP] Inviter {inviter_id_str} suspended — skip")
                     continue
 
-                # ── Fetch inviter Discord object (optional — only for DM) ─
+                # Fetch inviter Discord object (for DM)
                 inviter_member = guild.get_member(inviter_id_int)
                 if inviter_member is None:
                     try:
                         inviter_member = await guild.fetch_member(inviter_id_int)
                     except discord.NotFound:
-                        inviter_member = None   # left guild — still pay them
+                        inviter_member = None  # left guild — still pay them
                     except Exception as e:
                         print(f"[INVITE LOOP] fetch inviter {inviter_id_str} error: {e}")
                         continue
 
-                # ── Read reward from settings ─────────────────────────────
+                # Read reward from settings (admin-overridable)
                 setting = await conn.fetchrow(
                     "SELECT value FROM bot_settings WHERE key='invite_reward'"
                 )
-                reward = int(float(setting["value"])) if setting and setting["value"] else INVITE_REWARD
+                reward    = int(float(setting["value"])) if setting and setting["value"] else INVITE_REWARD
                 wager_req = int(reward * INVITE_WAGER_MULT)
 
-                # ── Atomic payout ─────────────────────────────────────────
+                # Atomic payout
                 try:
                     async with conn.transaction():
-                        # Remove from pending
                         await conn.execute(
-                            "DELETE FROM pending_invites WHERE invitee_id=$1",
-                            invitee_id_str
+                            "DELETE FROM pending_invites WHERE invitee_id=$1", invitee_id_str
                         )
-                        # Ensure inviter has a user row
                         if inviter_member:
                             await ensure_user(conn, inviter_member)
                         else:
@@ -2125,24 +2125,19 @@ async def _invite_check_loop():
                                    ON CONFLICT (user_id) DO NOTHING""",
                                 inviter_id_str, now_ts()
                             )
-                        # Credit balance
                         await update_balance(conn, inviter_id_int, reward)
-                        # Log transaction
                         await log_transaction(
                             conn, inviter_id_int, "invite_reward", reward,
                             f"invited {member.name} — 90d+ account, Member role"
                         )
-                        # Add wager requirement
                         await add_wager_req(conn, inviter_id_int, wager_req, "invite_reward")
-                        # Increment inviter's total count
                         await conn.execute(
-                            """INSERT INTO invites (user_id, total)
-                               VALUES ($1, 1)
+                            """INSERT INTO invites (user_id, total, leaves, suspended)
+                               VALUES ($1, 1, 0, FALSE)
                                ON CONFLICT (user_id) DO UPDATE
                                    SET total = invites.total + 1""",
                             inviter_id_str
                         )
-                        # Record in credited_invites (for leave tracking)
                         await conn.execute(
                             """INSERT INTO credited_invites (invitee_id, inviter_id)
                                VALUES ($1, $2)
@@ -2155,14 +2150,13 @@ async def _invite_check_loop():
 
                 print(f"[INVITE LOOP] ✅ Paid {format_amount(reward)} to {inviter_id_str} for {member.name}")
 
-                # ── DM inviter ────────────────────────────────────────────
+                # DM inviter
                 dm_target = inviter_member
                 if dm_target is None:
                     try:
                         dm_target = await bot.fetch_user(inviter_id_int)
                     except Exception:
                         dm_target = None
-
                 if dm_target:
                     try:
                         dm = discord.Embed(
@@ -2183,7 +2177,6 @@ async def _invite_check_loop():
             finally:
                 await release_conn(conn)
 
-        # Sleep AFTER processing so bot checks immediately on startup
         await asyncio.sleep(60)
 
 @bot.event
@@ -2207,31 +2200,30 @@ async def cmd_invites(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     conn = await get_conn()
     try:
-        inv_row      = await conn.fetchrow(
+        inv_row        = await conn.fetchrow(
             "SELECT total, leaves, suspended FROM invites WHERE user_id=$1", uid
         )
-        pending_count = await conn.fetchval(
+        pending_count  = await conn.fetchval(
             "SELECT COUNT(*) FROM pending_invites WHERE inviter_id=$1", uid
         )
         credited_count = await conn.fetchval(
             "SELECT COUNT(*) FROM credited_invites WHERE inviter_id=$1", uid
         )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Database error: {e}", ephemeral=True)
+        return
     finally:
         await release_conn(conn)
 
-    total     = inv_row["total"]     if inv_row else 0
-    leaves    = inv_row["leaves"]    if inv_row else 0
-    suspended = inv_row["suspended"] if inv_row else False
+    total     = int(inv_row["total"])     if inv_row and inv_row["total"]     is not None else 0
+    leaves    = int(inv_row["leaves"])    if inv_row and inv_row["leaves"]    is not None else 0
+    suspended = bool(inv_row["suspended"]) if inv_row and inv_row["suspended"] is not None else False
     valid     = max(0, total - leaves)
-    earned    = total * INVITE_REWARD    # total credited × reward (leaves reduce future, not past)
-    pending   = pending_count  or 0
-    credited  = credited_count or 0
+    earned    = total * INVITE_REWARD
+    pending   = int(pending_count)  if pending_count  else 0
+    credited  = int(credited_count) if credited_count else 0
 
-    embed = discord.Embed(
-        title="📨 Your Invites",
-        description="━━━━━━━━━━━━━━━━━━",
-        color=C_BLUE
-    )
+    embed = discord.Embed(title="📨 Your Invites", description="━━━━━━━━━━━━━━━━━━", color=C_BLUE)
     embed.add_field(name="👤 User",          value=interaction.user.mention, inline=False)
     embed.add_field(name="✅ Total Credited", value=str(total),              inline=True)
     embed.add_field(name="📤 Leaves",        value=str(leaves),             inline=True)
@@ -2241,6 +2233,7 @@ async def cmd_invites(interaction: discord.Interaction):
     if suspended:
         embed.add_field(name="⚠️ Status", value="Suspended by admin", inline=False)
     embed.set_footer(text="Rewards paid automatically every 60s once all checks pass")
+    _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
 # ── /claiminvites ─────────────────────────────────────────────────────────────
@@ -2254,6 +2247,9 @@ async def cmd_claiminvites(interaction: discord.Interaction):
             "SELECT invitee_id, joined_at FROM pending_invites WHERE inviter_id=$1 ORDER BY joined_at ASC",
             uid
         )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Database error: {e}", ephemeral=True)
+        return
     finally:
         await release_conn(conn)
 
@@ -2263,6 +2259,7 @@ async def cmd_claiminvites(interaction: discord.Interaction):
             description="You have no pending invites right now.",
             color=C_BLUE
         )
+        _brand_embed(embed)
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
@@ -2270,7 +2267,8 @@ async def cmd_claiminvites(interaction: discord.Interaction):
     for r in pending_rows[:10]:
         user = bot.get_user(int(r["invitee_id"]))
         name = user.name if user else f"User {r['invitee_id']}"
-        lines.append(f"• **{name}** — joined <t:{int(r['joined_at'].timestamp())}:R>")
+        ts   = int(r["joined_at"].timestamp()) if r["joined_at"] else 0
+        lines.append(f"• **{name}** — joined <t:{ts}:R>")
     if len(pending_rows) > 10:
         lines.append(f"*...and {len(pending_rows) - 10} more*")
 
@@ -2280,6 +2278,7 @@ async def cmd_claiminvites(interaction: discord.Interaction):
         color=C_BLUE
     )
     embed.set_footer(text=f"Awaiting: Member role + {INVITE_MIN_AGE_DAYS}d Discord account age")
+    _brand_embed(embed)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ── /inviteleaderboard ────────────────────────────────────────────────────────
@@ -2289,13 +2288,18 @@ async def cmd_inviteleaderboard(interaction: discord.Interaction):
     conn = await get_conn()
     try:
         rows = await conn.fetch(
-            """SELECT user_id, total, leaves,
-                      GREATEST(0, total - leaves) AS valid
+            """SELECT user_id,
+                      COALESCE(total,  0) AS total,
+                      COALESCE(leaves, 0) AS leaves,
+                      GREATEST(0, COALESCE(total, 0) - COALESCE(leaves, 0)) AS valid
                FROM invites
-               WHERE NOT suspended
+               WHERE NOT COALESCE(suspended, FALSE)
                ORDER BY valid DESC
                LIMIT 10"""
         )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Database error: {e}", ephemeral=True)
+        return
     finally:
         await release_conn(conn)
 
@@ -2303,8 +2307,8 @@ async def cmd_inviteleaderboard(interaction: discord.Interaction):
         await interaction.response.send_message("No invite data yet.", ephemeral=True)
         return
 
-    lines = []
     medals = ["🥇", "🥈", "🥉"]
+    lines  = []
     for i, row in enumerate(rows):
         user  = bot.get_user(int(row["user_id"]))
         name  = user.name if user else f"User {row['user_id']}"
@@ -2316,6 +2320,7 @@ async def cmd_inviteleaderboard(interaction: discord.Interaction):
         description="\n".join(lines),
         color=discord.Color.gold()
     )
+    _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
 
@@ -4103,7 +4108,7 @@ class CoinflipView(BaseGameView):
             elif forced == "lose":
                 result = "Tails" if self.choice == "Heads" else "Heads"
             else:
-                bot_wins = random.random() < HOUSE_WIN_COINFLIP
+                bot_wins = random.random() < _rand_house_edge("coinflip")
                 result   = ("Tails" if self.choice == "Heads" else "Heads") if bot_wins else self.choice
             creator_won = result == self.choice
         else:
@@ -4265,7 +4270,7 @@ class ProgressiveCoinflipView(BaseGameView):
         elif forced == "lose":
             result = "Tails" if guess == "Heads" else "Heads"
         else:
-            bot_wins = random.random() < HOUSE_WIN_PROGCF
+            bot_wins = random.random() < _rand_house_edge("progcf")
             result   = ("Tails" if guess == "Heads" else "Heads") if bot_wins else guess
         won = (result == guess)
 
@@ -5161,7 +5166,7 @@ class RouletteView(BaseGameView):
                 (e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name
             )
         else:
-            house_wins = random.random() < HOUSE_WIN_ROULETTE
+            house_wins = random.random() < _rand_house_edge("roulette")
             if house_wins:
                 result_emoji, result_name, result_multi = random.choice(losing_outcomes)
             else:
@@ -5499,7 +5504,7 @@ class BaccaratView(BaseGameView):
         elif _bac_forced == "lose":
             player_bet_wins = False
         else:
-            player_bet_wins = random.random() >= HOUSE_WIN_BACCARAT  # custom baccarat edge
+            player_bet_wins = random.random() >= _rand_house_edge("baccarat")  # custom baccarat edge
 
         if bet_type == "Tie":
             winner = "Player" if pt > bt else ("Banker" if bt > pt else "Tie")
@@ -5520,10 +5525,6 @@ class BaccaratView(BaseGameView):
             won        = False
 
         is_push = (winner == "Tie" and bet_type in ("Player", "Banker"))
-        _bac_house_flip = random.random() < 0.03  # 3% extra house flip
-        if won and not is_push and _bac_house_flip:
-            won    = False
-            payout = 0
         if not is_push:
             record_streak(self.creator.id, won)
         net     = payout - self.bet
@@ -6632,7 +6633,7 @@ class WarView(BaseGameView):
         opponent_name  = "🤖 Bot" if self.vs_bot else self.opponent.display_name
 
         if self.vs_bot:
-            bot_wins = random.random() < HOUSE_WIN_WAR
+            bot_wins = random.random() < _rand_house_edge("war")
             for _ in range(50):
                 creator_card  = war_card()
                 opponent_card = war_card()
@@ -6987,7 +6988,7 @@ class HiloView(BaseGameView):
             elif _hilo_forced == "lose":
                 player_wins = False
             else:
-                player_wins = random.random() >= HOUSE_WIN_HILO
+                player_wins = random.random() >= _rand_house_edge("hilo")
 
             if direction == "higher":
                 valid_win  = list(range(prev_rank + 1, 14))
@@ -7795,15 +7796,58 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
         grid[i] = "bomb"
     return grid
 
+def _tile_click_weight(index: int, revealed: set) -> float:
+    """
+    Estimate how likely a player is to click this tile next.
+    Players tend to click toward the center and toward tiles adjacent
+    to already-revealed gems (they feel 'safer'). Edges/corners get lower weight.
+    """
+    row, col = divmod(index, 5)
+    center_dist = abs(row - 2) + abs(col - 2)   # 0 (center) to 4 (corner)
+    base = 5.0 - center_dist                     # 5 (center) to 1 (corner)
+
+    # Adjacency bonus: tiles next to revealed gems feel "safer" to players
+    adj_bonus = 0.0
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 5 and 0 <= nc < 5:
+                neighbor = nr * 5 + nc
+                if neighbor in revealed:
+                    adj_bonus += 2.0
+
+    return base + adj_bonus
+
+
 def mines_rig_board(grid: list, revealed: set, mines: int) -> list:
-    """After each safe click, redistribute bombs across ALL unrevealed tiles
-    so every future click is a bomb. The current click is already in revealed."""
+    """
+    Soft rigging: place bombs on tiles the player is MOST LIKELY to click next,
+    based on proximity to revealed gems and center bias — but NOT all unrevealed
+    tiles. The player can still survive by clicking low-weight tiles.
+    Only the top ~60% most-tempting tiles are candidates for bombs.
+    """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
+    if len(unrevealed) <= mines:
+        return grid
+
+    # Score every unrevealed tile by click likelihood
+    weights = [(i, _tile_click_weight(i, revealed)) for i in unrevealed]
+    weights.sort(key=lambda x: x[1], reverse=True)  # highest weight first
+
+    # Only place bombs among the top 60% most-likely-clicked tiles
+    # (leaving the bottom 40% as safe escape routes)
+    candidate_count = max(mines, int(len(unrevealed) * 0.60))
+    candidate_count = min(candidate_count, len(unrevealed))
+    candidates = [i for i, _ in weights[:candidate_count]]
+
+    # Randomly pick `mines` bomb positions from the high-weight candidates
+    bomb_positions = set(random.sample(candidates, mines))
+
     new_grid = list(grid)
-    # Mark all unrevealed tiles as bombs
     for i in unrevealed:
-        new_grid[i] = "bomb"
-    # Keep revealed tiles as gems
+        new_grid[i] = "bomb" if i in bomb_positions else "gem"
     for i in revealed:
         new_grid[i] = "gem"
     return new_grid
@@ -8210,7 +8254,7 @@ def scratch_generate(force_win: bool = False, force_lose: bool = False) -> list:
     """
     if force_win:        win = True
     elif force_lose:     win = False
-    else:                win = random.random() < 0.2325  # 23.25% win rate → 7% edge
+    else:                win = random.random() < (1.0 - _rand_house_edge("scratch"))  # random 46-51% win rate
 
     if win:
         winner = random.choices(SCRATCH_EMOJIS, weights=SCRATCH_WEIGHTS, k=1)[0]
@@ -8715,8 +8759,8 @@ async def cmd_horserace(interaction: discord.Interaction, bet: str, horse: int):
     if _hr_forced == "win":    winner_idx = chosen
     elif _hr_forced == "lose": winner_idx = (chosen + 1) % 4
     else:
-        # 47% player wins, 53% house wins
-        if random.random() < 0.47:
+        # Random house edge 49-54% — player wins remaining %
+        if random.random() < (1.0 - _rand_house_edge("horserace")):
             winner_idx = chosen  # player's horse wins
         else:
             loser_horses = [i for i in range(4) if i != chosen]
@@ -9695,7 +9739,7 @@ class ColorDiceView(BaseGameView):
         elif _cd_forced == "lose":
             count = 0
         else:
-            if count == 1 and random.random() < BOT_HOUSE_WIN:
+            if count == 1 and random.random() < _rand_house_edge("colordice"):
                 attempts = 0
                 while count == 1 and attempts < 50:
                     slots = cd_roll_slots()
