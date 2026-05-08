@@ -105,9 +105,9 @@ HOUSE_WIN_HILO       = 0.53  # hilo
 BJ_DEALER_STAND      = 18   # Dealer stands at this total — overridden per-game by random 17-19
 
 def bj_dealer_stand_threshold() -> int:
-    """Randomize the dealer's stand threshold between 17 and 19 each hand.
-    17 = slightly player-friendly, 18 = baseline, 19 = heavily house-favored."""
-    return random.randint(17, 19)
+    """Randomize the dealer's stand threshold between 18 and 20 each hand.
+    18 = baseline, 19 = aggressive, 20 = heavily house-favored."""
+    return random.randint(18, 20)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -169,6 +169,8 @@ _cooldowns: dict[str, dict[int, float]] = {}
 GAME_COOLDOWN_SECONDS = 3
 
 _force_result: dict[int, str] = {}
+
+
 
 def get_dynamic_house_win(user_id: int, current_balance: int = 0) -> float:
     """Flat 53% house win rate. No pity system."""
@@ -6985,7 +6987,7 @@ class HiloView(BaseGameView):
             elif _hilo_forced == "lose":
                 player_wins = False
             else:
-                player_wins = random.random() >= HOUSE_WIN_HILO  # custom hilo edge
+                player_wins = random.random() >= HOUSE_WIN_HILO
 
             if direction == "higher":
                 valid_win  = list(range(prev_rank + 1, 14))
@@ -7808,7 +7810,11 @@ def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) ->
     """
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
     if len(unrevealed) <= mines:
-        return grid
+        # All remaining unrevealed tiles must be bombs — fix the grid to reflect this
+        new_grid = list(grid)
+        for i in unrevealed:
+            new_grid[i] = "bomb"
+        return new_grid
 
     r_c, c_c = divmod(last_clicked, 5)
 
@@ -7906,7 +7912,9 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Not your game.", ephemeral=True)
                 return
             if is_revealed:
-                await self._cashout(interaction)
+                # Clicking a revealed gem does nothing — cashout button handles cashout
+                await interaction.response.defer()
+                return
             else:
                 await self._pick(interaction, index)
         return callback
@@ -7932,10 +7940,6 @@ class MinesView(BaseGameView):
                 f"📊 **Multiplier:** {self.current_mult:.2f}x\n"
                 f"💸 **Won:** {format_amount(payout)} 💎\n"
                 f"✨ **Profit:** {profit_str} 💎\n"
-# ============================================================
-# PART 2 OF 2 — paste directly after part1 in your editor
-# ============================================================
-
                 f"💎 **Gems Found:** {self.gems_found}/{gems_total}"
             )
             embed = discord.Embed(title=title, description=desc, color=color)
@@ -7975,9 +7979,8 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Already revealed.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
+            await interaction.response.defer()
 
-        async with self._lock:
             if not await self._deduct_bet():
                 await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
                 self.done = True
@@ -7987,11 +7990,10 @@ class MinesView(BaseGameView):
 
             _mn_forced = _force_result.pop(self.creator.id, None)
             if _mn_forced == "win":
-                tile = "gem"   # always safe
+                tile = "gem"
             elif _mn_forced == "lose":
-                tile = "bomb"  # always explode
+                tile = "bomb"
             else:
-                # Always rig board BEFORE evaluating the click — bombs cluster toward clicked tile
                 self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
                 tile = self.grid[index]
 
@@ -8088,11 +8090,11 @@ class MinesView(BaseGameView):
             self.done = True
             self.stop()
             payout = min(self.current_winnings, MAX_PAYOUT)
-            net    = payout - self.bet
             await interaction.response.defer()
             conn = await get_conn()
             try:
                 payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "mines")
+                net    = payout - self.bet  # calculated AFTER apply_win_payout so net reflects actual credit
                 await record_game(conn, self.creator.id, True, self.bet, payout, game="mines")
                 await log_transaction(conn, self.creator.id, "mines_cashout", net)
                 await conn.execute(
@@ -8127,7 +8129,7 @@ class MinesView(BaseGameView):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
-        if not self.done:
+        if not self.done and self.bet_deducted:
             conn = await get_conn()
             try:
                 if self.gems_found > 0:
@@ -8142,6 +8144,7 @@ class MinesView(BaseGameView):
                     )
                     desc = f"Game timed out — auto cashed out **{format_amount(payout)} 💎** ({self.gems_found} gems found)."
                 else:
+                    # Bet was deducted but no gems found — refund
                     await update_balance(conn, self.creator.id, self.bet)
                     desc = f"Game timed out — bet of **{format_amount(self.bet)}** refunded."
             finally:
@@ -9705,9 +9708,9 @@ class ColorDiceView(BaseGameView):
 
         _cd_forced = _force_result.pop(self.creator.id, None)
         if _cd_forced == "win":
-            count = 1   # exactly one match = win
+            count = 1
         elif _cd_forced == "lose":
-            count = 0   # zero matches = loss
+            count = 0
         else:
             if count == 1 and random.random() < BOT_HOUSE_WIN:
                 attempts = 0
