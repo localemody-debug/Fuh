@@ -7784,18 +7784,13 @@ def mines_calc_mult(mines: int, gems_found: int) -> float:
 MINES_HOUSE_WIN = 0.99   # kept for admin panel reference only — rig is now deterministic
 
 def mines_generate_grid(mines: int, force_win: bool = False) -> list:
-    """Generate initial grid. Rigging happens per-click in MinesView._pick.
-    Initial grid pre-biases bombs toward the center for extra rigging."""
+    """Generate initial grid with fully randomized bomb positions so safe tiles
+    are never predictable by the player."""
     grid = ["gem"] * MINES_GRID_SIZE
     if force_win:
         bomb_positions = list(range(MINES_GRID_SIZE - mines, MINES_GRID_SIZE))
     else:
-        # Pre-bias: sort tiles by distance from center (tile 12), place bombs closest first
-        def center_dist(idx):
-            r, c = divmod(idx, 5)
-            return abs(r - 2) + abs(c - 2)
-        tiles_sorted = sorted(range(MINES_GRID_SIZE), key=center_dist)
-        bomb_positions = tiles_sorted[:mines]
+        bomb_positions = random.sample(range(MINES_GRID_SIZE), mines)
     for i in bomb_positions:
         grid[i] = "bomb"
     return grid
