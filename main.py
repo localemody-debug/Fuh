@@ -7848,10 +7848,18 @@ class MinesView(BaseGameView):
 
     def _build_buttons(self):
         self.clear_items()
+        # When revealing bombs on game over, only show the original mine count.
+        # After rigging, ALL unrevealed tiles are bombs in the grid, so we must
+        # limit display to self.mines tiles to avoid showing extra bombs.
+        unrevealed_bombs = [
+            i for i in range(MINES_GRID_SIZE)
+            if i not in self.revealed and self.grid[i] == "bomb"
+        ]
+        bombs_to_show = set(unrevealed_bombs[:self.mines])
         for i in range(MINES_GRID_SIZE):
             row_num     = i // 5
             is_revealed = i in self.revealed
-            is_bomb     = self.done and self.grid[i] == "bomb"
+            is_bomb     = self.done and i in bombs_to_show
 
             if is_revealed:
                 label = "💎"
