@@ -7384,14 +7384,13 @@ class TowersView(BaseGameView):
                 await interaction.response.send_message("❌ Game already over.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
-
-        async with self._lock:
             if not await self._deduct_bet():
-                await interaction.followup.send("❌ Insufficient balance. Game cancelled.", ephemeral=True)
+                await interaction.response.send_message("❌ Insufficient balance. Game cancelled.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
+
+            await interaction.response.defer()
 
             tile = self.tower[self.current_row][col]
             self.revealed[self.current_row] = col
@@ -7492,19 +7491,13 @@ class TowersView(BaseGameView):
                 await interaction.response.send_message(
                     "❌ Clear at least one row before cashing out.", ephemeral=True)
                 return
-            if not await self._deduct_bet():
-                await interaction.response.send_message(
-                    "❌ Insufficient balance. Game cancelled.", ephemeral=True)
-                self.done = True
-                self.stop()
-                return
 
             self.done = True
             self.stop()
             self._update_buttons()
-
             payout = min(self.current_winnings, MAX_PAYOUT)
             net    = payout - self.bet
+
             await interaction.response.defer()
 
             conn = await get_conn()
@@ -7799,15 +7792,16 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
 def _tile_click_weight(index: int, revealed: set) -> float:
     """
     Estimate how likely a player is to click this tile next.
-    Players tend to click toward the center and toward tiles adjacent
-    to already-revealed gems (they feel 'safer'). Edges/corners get lower weight.
+    Purely adjacency-driven: tiles directly next to revealed gems
+    get high weight (players click outward from where they've been).
+    With no revealed tiles yet all weights are equal (1.0).
+    No center bias — bombs follow YOUR path, not the board center.
     """
-    row, col = divmod(index, 5)
-    center_dist = abs(row - 2) + abs(col - 2)   # 0 (center) to 4 (corner)
-    base = 5.0 - center_dist                     # 5 (center) to 1 (corner)
+    if not revealed:
+        return 1.0  # no information yet — all tiles equally likely
 
-    # Adjacency bonus: tiles next to revealed gems feel "safer" to players
-    adj_bonus = 0.0
+    row, col = divmod(index, 5)
+    adj_weight = 0.0
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -7816,9 +7810,8 @@ def _tile_click_weight(index: int, revealed: set) -> float:
             if 0 <= nr < 5 and 0 <= nc < 5:
                 neighbor = nr * 5 + nc
                 if neighbor in revealed:
-                    adj_bonus += 2.0
-
-    return base + adj_bonus
+                    adj_weight += 3.0  # strong pull toward adjacent revealed tiles
+    return max(adj_weight, 0.5)  # non-adjacent tiles get a small base weight
 
 
 def mines_rig_board(grid: list, revealed: set, mines: int) -> list:
@@ -7928,7 +7921,7 @@ class MinesView(BaseGameView):
                 style=style,
                 custom_id=f"mine_{i}",
                 row=row_num,
-                disabled=self.done
+                disabled=self.done  # during play: all tiles active; revealed = cashout, unrevealed = pick
             )
             btn.callback = self._make_callback(i, is_revealed)
             self.add_item(btn)
@@ -7939,11 +7932,17 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Not your game.", ephemeral=True)
                 return
             if is_revealed:
-                await interaction.response.defer()
-                return
+                # Clicking an already-revealed gem cashes out
+                await self._cashout(interaction)
             else:
                 await self._pick(interaction, index)
         return callback
+
+    async def _cashout_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.creator.id:
+            await interaction.response.send_message("Not your game.", ephemeral=True)
+            return
+        await self._cashout(interaction)
 
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
         gems_total = MINES_GRID_SIZE - self.mines
@@ -8109,11 +8108,6 @@ class MinesView(BaseGameView):
                 return
             if self.gems_found == 0:
                 await interaction.response.send_message("Find a gem first!", ephemeral=True)
-                return
-            if self.current_mult <= 1.0:
-                await interaction.response.send_message(
-                    f"❌ Multiplier is **{self.current_mult:.2f}x** — keep going until it's above **1.00x**!",
-                    ephemeral=True)
                 return
             self.done = True
             self.stop()
@@ -9725,8 +9719,18 @@ class ColorDiceView(BaseGameView):
             finally:
                 await release_conn(conn)
         if not deducted:
+            # Reset state so the game isn't dead — let them try again
+            async with self._lock:
+                self.used = False
+                self.done = False
+            for item in self.children:
+                item.disabled = False
             await interaction.followup.send(
                 f"❌ Insufficient balance. Need **{format_amount(self.bet)}**.", ephemeral=True)
+            try:
+                await interaction.edit_original_response(view=self)
+            except Exception:
+                pass
             return
         msg = await interaction.original_response()
 
