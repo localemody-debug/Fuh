@@ -7854,9 +7854,10 @@ class MinesView(BaseGameView):
         # limit display to self.mines tiles to avoid showing extra bombs.
         unrevealed_bombs = [
             i for i in range(MINES_GRID_SIZE)
-            if i not in self.revealed and self.grid[i] == "bomb"
+            if i not in self.revealed and i != self.hit_index and self.grid[i] == "bomb"
         ]
-        bombs_to_show = set(unrevealed_bombs[:self.mines])
+        # hit_index already shown as 💥, so only need mines-1 additional bombs
+        bombs_to_show = set(unrevealed_bombs[:max(0, self.mines - 1)])
         for i in range(MINES_GRID_SIZE):
             row_num     = i // 5
             is_revealed = i in self.revealed
