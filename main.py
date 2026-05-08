@@ -7795,44 +7795,17 @@ def mines_generate_grid(mines: int, force_win: bool = False) -> list:
         grid[i] = "bomb"
     return grid
 
-def mines_rig_board(grid: list, revealed: set, last_clicked: int, mines: int) -> list:
-    """
-    MAXIMUM rigging — deterministic bomb placement.
-    Bombs are placed directly on the tiles immediately adjacent to the last click first,
-    then fill outward. Tiles within manhattan distance ≤ 2 of the cursor get an
-    extra priority boost, making the entire surrounding area near-lethal.
-    No randomness — the next tile the player clicks is almost guaranteed to be a bomb.
-    """
+def mines_rig_board(grid: list, revealed: set, mines: int) -> list:
+    """After each safe click, redistribute bombs across ALL unrevealed tiles
+    so every future click is a bomb. The current click is already in revealed."""
     unrevealed = [i for i in range(MINES_GRID_SIZE) if i not in revealed]
-    if len(unrevealed) <= mines:
-        # All remaining unrevealed tiles must be bombs — fix the grid to reflect this
-        new_grid = list(grid)
-        for i in unrevealed:
-            new_grid[i] = "bomb"
-        return new_grid
-
-    r_c, c_c = divmod(last_clicked, 5)
-
-    def sort_key(idx):
-        r, c = divmod(idx, 5)
-        dist_from_click  = abs(r - r_c) + abs(c - c_c)
-        dist_from_center = abs(r - 2) + abs(c - 2)
-        # Tiles within dist ≤ 2 of last click get pulled to the front
-        close_bonus = 0 if dist_from_click <= 2 else 20
-        return (close_bonus + dist_from_click, dist_from_center)
-
-    sorted_unrevealed = sorted(unrevealed, key=sort_key)
-    # Skip dist==0 (the tile just clicked — already revealed)
-    bomb_targets = [i for i in sorted_unrevealed if i != last_clicked]
-
-    # Place all mines on the closest unrevealed tiles — purely deterministic
-    chosen = bomb_targets[:mines]
-
-    new_grid = ["gem"] * MINES_GRID_SIZE
-    for b in chosen:
-        new_grid[b] = "bomb"
-    for r in revealed:
-        new_grid[r] = "gem"
+    new_grid = list(grid)
+    # Mark all unrevealed tiles as bombs
+    for i in unrevealed:
+        new_grid[i] = "bomb"
+    # Keep revealed tiles as gems
+    for i in revealed:
+        new_grid[i] = "gem"
     return new_grid
 
 def mines_render_grid(grid: list, revealed: set, game_over: bool = False) -> str:
@@ -7848,8 +7821,7 @@ def mines_render_grid(grid: list, revealed: set, game_over: bool = False) -> str
             else:
                 row_str += "⬛"
         rows.append(row_str)
-    return "\
-".join(rows)
+    return "\n".join(rows)
 
 class MinesView(BaseGameView):
     def __init__(self, creator: discord.User, bet: int, mines: int):
@@ -7907,7 +7879,6 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Not your game.", ephemeral=True)
                 return
             if is_revealed:
-                # Clicking a revealed gem does nothing — cashout button handles cashout
                 await interaction.response.defer()
                 return
             else:
@@ -7956,7 +7927,6 @@ class MinesView(BaseGameView):
         _brand_embed(embed)
         return embed
 
-
     async def _deduct_bet(self) -> bool:
         if self.bet_deducted:
             return True
@@ -7981,7 +7951,8 @@ class MinesView(BaseGameView):
                 self.done = True
                 self.stop()
                 return
-            tile = self.grid[index]
+
+            tile = self.grid[index]  # read current tile BEFORE rigging
 
             _mn_forced = _force_result.pop(self.creator.id, None)
             if _mn_forced == "win":
@@ -7989,8 +7960,9 @@ class MinesView(BaseGameView):
             elif _mn_forced == "lose":
                 tile = "bomb"
             else:
-                self.grid = mines_rig_board(self.grid, self.revealed, index, self.mines)
-                tile = self.grid[index]
+                # Rig the remaining board so future clicks hit bombs
+                # Pass index as already-revealed so rig fills everything else with bombs
+                self.grid = mines_rig_board(self.grid, self.revealed | {index}, self.mines)
 
             if tile == "bomb":
                 self.done = True
@@ -8089,7 +8061,7 @@ class MinesView(BaseGameView):
             conn = await get_conn()
             try:
                 payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "mines")
-                net    = payout - self.bet  # calculated AFTER apply_win_payout so net reflects actual credit
+                net    = payout - self.bet
                 await record_game(conn, self.creator.id, True, self.bet, payout, game="mines")
                 await log_transaction(conn, self.creator.id, "mines_cashout", net)
                 await conn.execute(
@@ -8139,7 +8111,6 @@ class MinesView(BaseGameView):
                     )
                     desc = f"Game timed out — auto cashed out **{format_amount(payout)} 💎** ({self.gems_found} gems found)."
                 else:
-                    # Bet was deducted but no gems found — refund
                     await update_balance(conn, self.creator.id, self.bet)
                     desc = f"Game timed out — bet of **{format_amount(self.bet)}** refunded."
             finally:
@@ -8149,10 +8120,10 @@ class MinesView(BaseGameView):
                     embed=discord.Embed(color=C_DARK, description=f"## 💣  MINES — EXPIRED\n> {desc}"),
                     view=None)
             except Exception as e:
-
                 print(f"[ERROR] {type(e).__name__}: {e}")
                 pass
         await super().on_timeout()
+
 @bot.tree.command(name="mines", description="Play Mines — find gems and avoid bombs!")
 @app_commands.describe(bet="Bet amount e.g. 5k, 1M", mines="Number of mines (1-24)")
 async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
