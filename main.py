@@ -7834,6 +7834,7 @@ class MinesView(BaseGameView):
         self.gems_found   = 0
         self.done         = False
         self.bet_deducted = False
+        self.hit_index    = -1   # tile index the player actually clicked and exploded
         self._lock        = asyncio.Lock()
         self._original_message = None
         self._build_buttons()
@@ -7863,10 +7864,16 @@ class MinesView(BaseGameView):
 
             if is_revealed:
                 label = "💎"
-                style = discord.ButtonStyle.success
+                style = discord.ButtonStyle.success        # green  — safe tile you clicked
+            elif self.done and i == self.hit_index:
+                label = "💥"
+                style = discord.ButtonStyle.danger         # red    — the bomb YOU hit
             elif is_bomb:
                 label = "💣"
-                style = discord.ButtonStyle.danger
+                style = discord.ButtonStyle.secondary      # grey   — other mines on the board
+            elif self.done:
+                label = "💎"
+                style = discord.ButtonStyle.success        # green  — unclicked safe tile revealed after game over
             else:
                 label = "\u200b"
                 style = discord.ButtonStyle.secondary
@@ -7974,6 +7981,7 @@ class MinesView(BaseGameView):
 
             if tile == "bomb":
                 self.done = True
+                self.hit_index = index
                 self.stop()
                 self._build_buttons()
                 conn = await get_conn()
