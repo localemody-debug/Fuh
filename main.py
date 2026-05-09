@@ -7908,6 +7908,18 @@ class MinesView(BaseGameView):
 
     def _build_buttons(self):
         self.clear_items()
+        # Safety check: if grid has wrong bomb count, fix it before display
+        if self.done and self.hit_index >= 0:
+            actual_bombs = sum(1 for x in self.grid if x == "bomb")
+            if actual_bombs != self.mines:
+                self.grid = ["gem"] * MINES_GRID_SIZE
+                other = [i for i in range(MINES_GRID_SIZE)
+                         if i not in self.revealed and i != self.hit_index]
+                for i in random.sample(other, min(self.mines - 1, len(other))):
+                    self.grid[i] = "bomb"
+                self.grid[self.hit_index] = "bomb"
+                for i in self.revealed:
+                    self.grid[i] = "gem"
         for i in range(MINES_GRID_SIZE):
             row_num     = i // 5
             is_revealed = i in self.revealed
@@ -8032,14 +8044,10 @@ class MinesView(BaseGameView):
             elif _mn_forced == "lose":
                 tile = "bomb"
             else:
-                # Rig the remaining board. Pass current index as revealed so the
-                # rig doesn't place a bomb there — we'll restore it if it's a bomb hit.
-                rigged = mines_rig_board(self.grid, self.revealed | {index}, self.mines)
-                # If this click is a bomb, put the bomb back at index so the
-                # grid shows exactly self.mines bombs (not mines+1)
-                if tile == "bomb":
-                    rigged[index] = "bomb"
-                self.grid = rigged
+                # Only rig the board if the player hit a safe tile (gem).
+                # If they hit a bomb the game is over — no need to rig future clicks.
+                if tile == "gem":
+                    self.grid = mines_rig_board(self.grid, self.revealed | {index}, self.mines)
 
             if tile == "bomb":
                 self.done = True
