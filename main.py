@@ -3133,6 +3133,7 @@ async def cmd_history(interaction: discord.Interaction):
         "roulette": "◉", "blackjack": "♠️", "baccarat": "🎴",
         "mines": "💣", "scratch": "🎟️", "hilo": "🃏", "towers": "🏰",
         "war": "⚔️", "rps": "✊", "horserace": "🏇", "upgrader": "⬆️",
+        "keno": "🎰",
     }
     lines = []
     for r in rows:
@@ -8252,6 +8253,324 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
+# ================================================================
+#  KENO
+# ================================================================
+
+KENO_GRID_SIZE = 40   # 1-40, Discord supports max 25 buttons per view (5 rows x 5)
+                       # We use a 5x8 layout but Discord caps at 25 — use two messages or
+                       # limit to 25 tiles. We'll use 1-25 for a clean 5x5 grid.
+KENO_TILES     = 25   # 5x5 grid
+KENO_DRAWN     = 10   # how many tiles the house draws
+
+KENO_PAYOUTS = {
+    1:  {1: 3},
+    2:  {2: 6},
+    3:  {2: 2,  3: 12},
+    4:  {2: 1,  3: 4,  4: 30},
+    5:  {3: 2,  4: 8,  5: 75},
+    6:  {3: 1,  4: 4,  5: 25,  6: 200},
+    7:  {4: 4,  5: 15, 6: 60,  7: 400},
+    8:  {4: 2,  5: 8,  6: 40,  7: 150, 8: 750},
+    9:  {5: 8,  6: 20, 7: 80,  8: 400, 9: 1500},
+    10: {5: 4,  6: 15, 7: 60,  8: 300, 9: 750, 10: 4000},
+}
+
+def keno_rig_draw(selected: list, drawn_count: int = KENO_DRAWN) -> list:
+    """
+    Rigged draw: uses same adjacency-pull technique as mines.
+    Bombs (hits) are weighted toward the numbers the player picked,
+    but not guaranteed — gives a near-miss feel.
+    Pool of candidates = player's picks + 45% of the remaining tiles.
+    House draws `drawn_count` tiles from that pool.
+    """
+    all_tiles   = list(range(1, KENO_TILES + 1))
+    not_picked  = [t for t in all_tiles if t not in selected]
+
+    # 45% of non-picked tiles can be drawn (same ratio as mines rigging)
+    filler_count = max(0, int(len(not_picked) * 0.45))
+    filler       = random.sample(not_picked, filler_count)
+
+    # Candidate pool: all player picks + 45% of non-picks
+    candidate_pool = selected + filler
+    candidate_pool = list(set(candidate_pool))  # deduplicate
+
+    # Draw min(drawn_count, len(pool)) from pool
+    draw_from_pool = min(drawn_count, len(candidate_pool))
+    drawn = random.sample(candidate_pool, draw_from_pool)
+
+    # If we need more tiles (pool was small), fill from remaining
+    if len(drawn) < drawn_count:
+        remaining = [t for t in all_tiles if t not in drawn]
+        drawn += random.sample(remaining, drawn_count - len(drawn))
+
+    return sorted(drawn)
+
+
+class KenoView(BaseGameView):
+    def __init__(self, creator: discord.User, bet: int, spots: int):
+        super().__init__(timeout=120)
+        self.creator      = creator
+        self.bet          = bet
+        self.spots        = spots          # how many the player must pick
+        self.selected     = []             # player's chosen tile numbers (1-25)
+        self.drawn        = []             # house draw result
+        self.done         = False
+        self.bet_deducted = False
+        self._lock        = asyncio.Lock()
+        self._original_message = None
+        self._build_buttons()
+
+    def _build_buttons(self):
+        self.clear_items()
+        for i in range(1, KENO_TILES + 1):
+            row_num = (i - 1) // 5
+            is_selected = i in self.selected
+            is_drawn    = i in self.drawn
+            is_hit      = is_selected and is_drawn
+
+            if self.done:
+                if is_hit:
+                    label = str(i)
+                    style = discord.ButtonStyle.success   # green  — hit
+                elif is_drawn:
+                    label = str(i)
+                    style = discord.ButtonStyle.danger    # red    — drawn but not picked
+                elif is_selected:
+                    label = str(i)
+                    style = discord.ButtonStyle.secondary # grey   — picked but not drawn (miss)
+                else:
+                    label = str(i)
+                    style = discord.ButtonStyle.secondary
+            else:
+                if is_selected:
+                    label = str(i)
+                    style = discord.ButtonStyle.primary   # blue   — selected by player
+                else:
+                    label = str(i)
+                    style = discord.ButtonStyle.secondary # grey   — unselected
+
+            btn = discord.ui.Button(
+                label=label,
+                style=style,
+                custom_id=f"keno_{i}",
+                row=row_num,
+                disabled=self.done
+            )
+            btn.callback = self._make_callback(i)
+            self.add_item(btn)
+
+    def _make_callback(self, number: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.creator.id:
+                await interaction.response.send_message("Not your game.", ephemeral=True)
+                return
+            async with self._lock:
+                if self.done:
+                    await interaction.response.send_message("Game already over.", ephemeral=True)
+                    return
+
+                if number in self.selected:
+                    # Deselect
+                    self.selected.remove(number)
+                    self._build_buttons()
+                    await interaction.response.edit_message(
+                        embed=self.game_embed(), view=self)
+                    return
+
+                if len(self.selected) >= self.spots:
+                    await interaction.response.send_message(
+                        f"You can only pick **{self.spots}** numbers.", ephemeral=True)
+                    return
+
+                self.selected.append(number)
+
+                if len(self.selected) == self.spots:
+                    # All spots filled — play the game
+                    if not await self._deduct_bet():
+                        await interaction.response.send_message(
+                            "❌ Insufficient balance.", ephemeral=True)
+                        self.done = True
+                        self.stop()
+                        return
+
+                    await interaction.response.defer()
+
+                    self.drawn = keno_rig_draw(self.selected, KENO_DRAWN)
+                    hits       = len(set(self.selected) & set(self.drawn))
+                    multiplier = KENO_PAYOUTS.get(self.spots, {}).get(hits, 0)
+                    payout     = self.bet * multiplier
+                    won        = payout > 0
+                    self.done  = True
+                    self.stop()
+                    self._build_buttons()
+
+                    conn = await get_conn()
+                    try:
+                        if won:
+                            payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "keno")
+                        net = payout - self.bet
+                        await record_game(conn, self.creator.id, won, self.bet, payout, game="keno")
+                        await log_transaction(conn, self.creator.id, "keno_result", net)
+                        if interaction.guild:
+                            row = await get_user(conn, self.creator.id)
+                            member = interaction.guild.get_member(self.creator.id)
+                            if row and member:
+                                await update_user_rank(member, row["wagered"])
+                            asyncio.create_task(check_vip_balance(
+                                self.creator.id, interaction.guild))
+                    finally:
+                        await release_conn(conn)
+
+                    try:
+                        await interaction.edit_original_response(
+                            embed=self.game_embed(hits=hits, multiplier=multiplier,
+                                                  payout=payout, won=won),
+                            view=self)
+                    except Exception as e:
+                        print(f"[KENO RESULT DISPLAY] {e}")
+
+                    log_e = discord.Embed(
+                        title="🎰 Keno Result",
+                        color=C_WIN if won else C_LOSS)
+                    log_e.add_field(name="Player",     value=self.creator.mention,     inline=True)
+                    log_e.add_field(name="Bet",        value=format_amount(self.bet),  inline=True)
+                    log_e.add_field(name="Spots",      value=str(self.spots),          inline=True)
+                    log_e.add_field(name="Hits",       value=str(hits),                inline=True)
+                    log_e.add_field(name="Multiplier", value=f"{multiplier}x",         inline=True)
+                    log_e.add_field(name="Payout",     value=format_amount(payout),    inline=True)
+                    log_e.add_field(name="Outcome",    value="✅ WIN" if won else "❌ LOSS", inline=True)
+                    log_e.set_footer(text=now_ts())
+                    await send_log(log_e)
+                    return
+
+                # Partial selection — update display
+                self._build_buttons()
+                await interaction.response.edit_message(
+                    embed=self.game_embed(), view=self)
+        return callback
+
+    async def _deduct_bet(self) -> bool:
+        if self.bet_deducted:
+            return True
+        conn = await get_conn()
+        try:
+            ok = await deduct_balance_safe(conn, self.creator.id, self.bet)
+        finally:
+            await release_conn(conn)
+        if ok:
+            self.bet_deducted = True
+        return ok
+
+    def game_embed(self, hits: int = None, multiplier: int = None,
+                   payout: int = None, won: bool = None) -> discord.Embed:
+        selected_left = self.spots - len(self.selected)
+
+        if self.done and hits is not None:
+            color = C_WIN if won else C_LOSS
+            title = "🎰 KENO — " + ("WIN! 🎉" if won else "Better luck next time")
+            profit = payout - self.bet
+            profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
+            desc = (
+                f"🎯 **Your picks:** {' '.join(str(n) for n in sorted(self.selected))}\n"
+                f"🎲 **Drawn:**      {' '.join(str(n) for n in self.drawn)}\n\n"
+                f"✅ **Hits:** {hits}/{self.spots}   •   📊 **Multiplier:** {multiplier}x\n"
+                f"💸 **Won:** {format_amount(payout)} 💎   •   ✨ **Profit:** {profit_str} 💎"
+            )
+        else:
+            color = C_BLUE
+            title = "🎰 KENO"
+            if selected_left > 0:
+                desc = (
+                    f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
+                    f"🎯 **Pick {self.spots} numbers** — {selected_left} remaining\n"
+                    f"✅ **Selected:** {', '.join(str(n) for n in sorted(self.selected)) or 'none'}\n\n"
+                    f"*{KENO_DRAWN} numbers will be drawn. Match to win!*"
+                )
+            else:
+                desc = (
+                    f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
+                    f"🎯 **All {self.spots} picked!** Drawing...\n"
+                    f"✅ **Selected:** {', '.join(str(n) for n in sorted(self.selected))}"
+                )
+
+        embed = discord.Embed(title=title, description=desc, color=color)
+        _brand_embed(embed)
+        return embed
+
+    async def on_timeout(self):
+        if not self.done:
+            self.done = True
+            self.stop()
+            # Refund if bet was deducted but game never completed
+            if self.bet_deducted and self.selected and len(self.selected) < self.spots:
+                conn = await get_conn()
+                try:
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        self.bet, str(self.creator.id))
+                    await log_transaction(conn, self.creator.id, "keno_timeout_refund", self.bet)
+                finally:
+                    await release_conn(conn)
+
+
+@bot.tree.command(name="keno", description="Play Keno — pick your lucky numbers and match the draw!")
+@app_commands.describe(
+    bet="Amount to bet",
+    spots="How many numbers to pick (1–10)"
+)
+@app_commands.guild_only()
+async def cmd_keno(interaction: discord.Interaction, bet: str, spots: int):
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message(
+            "⏳ You already have an active game running! Finish it first.", ephemeral=True)
+        return
+    if spots < 1 or spots > 10:
+        _end_game_session(interaction.user.id)
+        await interaction.response.send_message(
+            "❌ Spots must be between **1** and **10**.", ephemeral=True)
+        return
+    amt = parse_amount(bet)
+    if not amt or amt <= 0:
+        _end_game_session(interaction.user.id)
+        await interaction.response.send_message("❌ Invalid bet amount.", ephemeral=True)
+        return
+    if amt < MIN_BET:
+        _end_game_session(interaction.user.id)
+        await interaction.response.send_message(
+            f"❌ Minimum bet is **{format_amount(MIN_BET)}**.", ephemeral=True)
+        return
+    if amt > MAX_BET:
+        _end_game_session(interaction.user.id)
+        await interaction.response.send_message(
+            f"❌ Maximum bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
+        return
+
+    if not check_cooldown("keno", interaction.user.id):
+        _end_game_session(interaction.user.id)
+        await interaction.response.send_message("⏳ Slow down!", ephemeral=True)
+        return
+
+    conn = await get_conn()
+    try:
+        await ensure_user(conn, interaction.user)
+        row = await get_user(conn, interaction.user.id)
+        if not row or row["balance"] < amt:
+            bal = row["balance"] if row else 0
+            _end_game_session(interaction.user.id)
+            await interaction.response.send_message(
+                f"❌ Insufficient balance — you have **{format_amount(bal)}** but need **{format_amount(amt)}**.",
+                ephemeral=True)
+            return
+    finally:
+        await release_conn(conn)
+
+    stamp_cooldown("keno", interaction.user.id)
+    view = KenoView(interaction.user, amt, spots)
+    await interaction.response.send_message(embed=view.game_embed(), view=view)
+    view._original_message = await interaction.original_response()
+
+
 SCRATCH_SYMBOLS = [
     ("🍒", 1.5,  40),   # Cherry   — very common
     ("🔔", 2.5,  25),   # Bell     — common
@@ -10155,98 +10474,6 @@ class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-@bot.tree.command(name="sendverify", description="[Admin] Post the verification button and auto-lock all channels to Verified-only.")
-@app_commands.describe(message="Optional custom message above the button")
-@admin_only()
-async def cmd_sendverify(interaction: discord.Interaction, message: str = None):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-
-    verified_role = await ensure_verified_role(guild)
-    member_role   = await ensure_member_role(guild)
-
-    locked = 0
-    skipped = 0
-    everyone = guild.default_role
-    for channel in guild.text_channels:
-        if channel.id == interaction.channel.id:
-            try:
-                await channel.set_permissions(everyone,       read_messages=True,  send_messages=False)
-                await channel.set_permissions(verified_role,  read_messages=True,  send_messages=True)
-            except Exception:
-                pass
-            continue
-        try:
-            await channel.set_permissions(everyone,      read_messages=False, send_messages=False)
-            await channel.set_permissions(verified_role, read_messages=True,  send_messages=True)
-            locked += 1
-        except discord.Forbidden:
-            skipped += 1
-        except Exception as e:
-            print(f"[VERIFY SETUP] Channel {channel.name}: {e}")
-            skipped += 1
-
-    conn = await get_conn()
-    try:
-        await conn.execute(
-            "INSERT INTO bot_settings (key, value) VALUES ('verify_channel_id', $1) "
-            "ON CONFLICT (key) DO UPDATE SET value=$1",
-            str(interaction.channel.id)
-        )
-    finally:
-        await release_conn(conn)
-
-    desc = message or (
-        "Click the button below to verify yourself and gain instant access to the server.\n\n"
-        "**Takes 1 second — just click the button below.**"
-    )
-    embed = discord.Embed(
-        title="🔐  Member Verification",
-        description=desc,
-        color=discord.Color(0x57F287)
-    )
-    embed.set_footer(text="One click — instant access.")
-    await interaction.channel.send(embed=embed, view=VerifyView())
-
-    await interaction.followup.send(
-        f"✅ Done!\n"
-        f"• **{locked}** channels locked to Verified-only\n"
-        f"• **{skipped}** channels skipped (missing permissions)\n"
-        f"• Verify button posted in {interaction.channel.mention}\n"
-        f"• New members will be DM'd to verify before they can access anything",
-        ephemeral=True
-    )
-
-@bot.tree.command(name="setverifylog", description="[Admin] Set channel where verifications are logged.")
-@app_commands.describe(channel="Channel to log verifications in")
-@admin_only()
-async def cmd_setverifylog(interaction: discord.Interaction, channel: discord.TextChannel):
-    conn = await get_conn()
-    try:
-        await conn.execute(
-            "INSERT INTO bot_settings (key, value) VALUES ('verify_log_channel', $1) "
-            "ON CONFLICT (key) DO UPDATE SET value=$1",
-            str(channel.id)
-        )
-    finally:
-        await release_conn(conn)
-    await interaction.response.send_message(
-        f"✅ Verification logs will be sent to {channel.mention}.", ephemeral=True)
-
-@bot.tree.command(name="unverify", description="[Admin] Remove the Verified role from a user.")
-@app_commands.describe(user="User to unverify")
-@admin_only()
-async def cmd_unverify(interaction: discord.Interaction, user: discord.Member):
-    role = discord.utils.get(interaction.guild.roles, name=VERIFIED_ROLE_NAME)
-    if not role or role not in user.roles:
-        await interaction.response.send_message(f"⚠️ {user.mention} doesn't have the Verified role.", ephemeral=True)
-        return
-    try:
-        await user.remove_roles(role, reason=f"Unverified by {interaction.user}")
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ Missing permissions to remove role.", ephemeral=True)
-        return
-    await interaction.response.send_message(f"✅ Removed Verified role from {user.mention}.", ephemeral=True)
 
 @bot.tree.command(name="setreward", description="[Admin] Set the gem reward for inviting a member with a 60+ day old account.")
 @app_commands.describe(amount="Gem reward per valid invite e.g. 50k, 1M. Set to 0 to disable.")
