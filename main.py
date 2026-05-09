@@ -8392,6 +8392,7 @@ class KenoView(BaseGameView):
                             "❌ Insufficient balance.", ephemeral=True)
                         self.done = True
                         self.stop()
+                        _end_game_session(self.creator.id)
                         return
 
                     await interaction.response.defer()
@@ -8399,10 +8400,11 @@ class KenoView(BaseGameView):
                     self.drawn = keno_rig_draw(self.selected, KENO_DRAWN)
                     hits       = len(set(self.selected) & set(self.drawn))
                     multiplier = KENO_PAYOUTS.get(self.spots, {}).get(hits, 0)
-                    payout     = self.bet * multiplier
+                    payout     = min(self.bet * multiplier, MAX_PAYOUT)  # Enforce max payout
                     won        = payout > 0
                     self.done  = True
                     self.stop()
+                    _end_game_session(self.creator.id)  # End session after game completes
                     self._build_buttons()
 
                     conn = await get_conn()
@@ -8502,8 +8504,9 @@ class KenoView(BaseGameView):
         if not self.done:
             self.done = True
             self.stop()
+            _end_game_session(self.creator.id)  # End session on timeout
             # Refund if bet was deducted but game never completed
-            if self.bet_deducted and self.selected and len(self.selected) < self.spots:
+            if self.bet_deducted and len(self.selected) < self.spots:
                 conn = await get_conn()
                 try:
                     await conn.execute(
@@ -8521,36 +8524,46 @@ class KenoView(BaseGameView):
 )
 @app_commands.guild_only()
 async def cmd_keno(interaction: discord.Interaction, bet: str, spots: int):
-    if not _start_game_session(interaction.user.id):
+    # Check cooldown FIRST
+    wait = check_cooldown("keno", interaction.user.id)
+    if wait > 0:
         await interaction.response.send_message(
-            "⏳ You already have an active game running! Finish it first.", ephemeral=True)
+            f"⏳ Wait **{wait:.1f}s** before playing again.", ephemeral=True)
         return
+    
+    # Check if game is locked
+    if is_game_locked("keno", interaction.user):
+        await interaction.response.send_message(
+            "🔒 **Keno** is currently locked to staff only.", ephemeral=True)
+        return
+    
+    # Validate spots
     if spots < 1 or spots > 10:
-        _end_game_session(interaction.user.id)
         await interaction.response.send_message(
             "❌ Spots must be between **1** and **10**.", ephemeral=True)
         return
+    
+    # Parse and validate bet
     amt = parse_amount(bet)
     if not amt or amt <= 0:
-        _end_game_session(interaction.user.id)
         await interaction.response.send_message("❌ Invalid bet amount.", ephemeral=True)
         return
     if amt < MIN_BET:
-        _end_game_session(interaction.user.id)
         await interaction.response.send_message(
             f"❌ Minimum bet is **{format_amount(MIN_BET)}**.", ephemeral=True)
         return
     if amt > MAX_BET:
-        _end_game_session(interaction.user.id)
         await interaction.response.send_message(
             f"❌ Maximum bet is **{format_amount(MAX_BET)}**.", ephemeral=True)
         return
-
-    if not check_cooldown("keno", interaction.user.id):
-        _end_game_session(interaction.user.id)
-        await interaction.response.send_message("⏳ Slow down!", ephemeral=True)
+    
+    # Check if user already has an active game
+    if not _start_game_session(interaction.user.id):
+        await interaction.response.send_message(
+            "⏳ You already have an active game running! Finish it first.", ephemeral=True)
         return
 
+    # Check balance
     conn = await get_conn()
     try:
         await ensure_user(conn, interaction.user)
