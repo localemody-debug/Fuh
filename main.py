@@ -3308,7 +3308,30 @@ class BaseGameView(discord.ui.View):
         if creator:
             _end_game_session(creator.id)
         self.stop()
-        msg = "❌ Something went wrong. Your bet has been refunded if it was deducted."
+
+        # Actually refund the bet if it was deducted
+        bet = getattr(self, 'bet', 0)
+        bet_deducted = getattr(self, 'bet_deducted', False) or getattr(self, '_bet_deducted', False)
+        refunded = False
+        if bet_deducted and bet and creator:
+            try:
+                conn = await get_conn()
+                try:
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        bet, str(creator.id)
+                    )
+                    await log_transaction(conn, creator.id, "error_refund", bet)
+                    refunded = True
+                finally:
+                    await release_conn(conn)
+            except Exception as refund_err:
+                print(f"[GAME ERROR] Failed to refund bet: {refund_err}")
+
+        if refunded:
+            msg = f"❌ Something went wrong. Your bet of **{format_amount(bet)}** has been refunded."
+        else:
+            msg = "❌ Something went wrong. Please contact support if your balance was affected."
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
@@ -6969,15 +6992,14 @@ class HiloView(BaseGameView):
                 await interaction.response.send_message("❌ Game already over.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
-
-        async with self._lock:
             if not await self._deduct_bet():
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     "❌ Insufficient balance. Game cancelled.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
+
+            await interaction.response.defer()
 
             prev_card  = self.current_card
             prev_rank  = prev_card[0]
@@ -7084,9 +7106,9 @@ class HiloView(BaseGameView):
                     "❌ You must guess at least once before cashing out.", ephemeral=True)
                 return
             self.done = True
-            self.stop()
 
         await interaction.response.defer()
+        self.stop()
 
         async with self._lock:
             if not self.bet_deducted:
@@ -7493,12 +7515,12 @@ class TowersView(BaseGameView):
                 return
 
             self.done = True
-            self.stop()
             self._update_buttons()
             payout = min(self.current_winnings, MAX_PAYOUT)
             net    = payout - self.bet
 
             await interaction.response.defer()
+            self.stop()
 
             conn = await get_conn()
             try:
@@ -7994,13 +8016,13 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Already revealed.", ephemeral=True)
                 return
 
-            await interaction.response.defer()
-
             if not await self._deduct_bet():
-                await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
+                await interaction.response.send_message("❌ Insufficient balance.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
+
+            await interaction.response.defer()
 
             tile = self.grid[index]  # read current tile BEFORE rigging
 
@@ -8010,9 +8032,14 @@ class MinesView(BaseGameView):
             elif _mn_forced == "lose":
                 tile = "bomb"
             else:
-                # Rig the remaining board so future clicks hit bombs
-                # Pass index as already-revealed so rig fills everything else with bombs
-                self.grid = mines_rig_board(self.grid, self.revealed | {index}, self.mines)
+                # Rig the remaining board. Pass current index as revealed so the
+                # rig doesn't place a bomb there — we'll restore it if it's a bomb hit.
+                rigged = mines_rig_board(self.grid, self.revealed | {index}, self.mines)
+                # If this click is a bomb, put the bomb back at index so the
+                # grid shows exactly self.mines bombs (not mines+1)
+                if tile == "bomb":
+                    rigged[index] = "bomb"
+                self.grid = rigged
 
             if tile == "bomb":
                 self.done = True
@@ -8101,9 +8128,9 @@ class MinesView(BaseGameView):
                 await interaction.response.send_message("Find a gem first!", ephemeral=True)
                 return
             self.done = True
-            self.stop()
             payout = min(self.current_winnings, MAX_PAYOUT)
             await interaction.response.defer()
+            self.stop()
             conn = await get_conn()
             try:
                 payout = await apply_win_payout(conn, self.creator.id, payout, self.bet, "mines")
@@ -8125,7 +8152,7 @@ class MinesView(BaseGameView):
                 await release_conn(conn)
             self._build_buttons()
             try:
-                await interaction.edit_original_response(embed=self.game_embed("win"), view=self)
+                await interaction.edit_original_response(embed=self.game_embed("win"), view=None)
             except Exception as _result_err:
                 print(f'[RESULT DISPLAY FAILED] {type(_result_err).__name__}: {_result_err}')
             log_e = discord.Embed(title="💣 Mines Result", color=C_WIN)
@@ -8339,14 +8366,14 @@ class ScratchView(BaseGameView):
                 await interaction.response.send_message("❌ Already done.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
-
-        async with self._lock:
             if not await self._deduct_bet():
-                await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
+                await interaction.response.send_message("❌ Insufficient balance.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
+
+            await interaction.response.defer()
+
             for i in range(9):
                 self.revealed.add(i)
             await self._finish(interaction)
@@ -8447,14 +8474,14 @@ class ScratchView(BaseGameView):
                 await interaction.response.send_message("❌ Already revealed.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
-
-        async with self._lock:
             if not await self._deduct_bet():
-                await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
+                await interaction.response.send_message("❌ Insufficient balance.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
+
+            await interaction.response.defer()
+
             self.revealed.add(index)
 
             if len(self.revealed) == 9:
@@ -9112,22 +9139,23 @@ class BalloonView(BaseGameView):
                 await interaction.response.send_message("❌ Game over.", ephemeral=True)
                 return
 
-        await interaction.response.defer()
-
-        async with self._lock:
             if not await self._deduct_bet():
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     "❌ Insufficient balance. Game cancelled.", ephemeral=True)
                 self.done = True
                 self.stop()
                 return
 
+            await interaction.response.defer()
+
             self._update_buttons()
             await interaction.edit_original_response(
                 embed=self.game_embed("pumping", pumping=True), view=self)
-            await asyncio.sleep(0.8)
 
-            pop_chance = balloon_pop_chance(self.pumps + 1)
+        # Sleep outside the lock so other buttons aren't blocked
+        await asyncio.sleep(0.8)
+
+        async with self._lock:
             _pb_forced = _force_result.get(self.creator.id)  # peek, don't pop yet
             if _pb_forced == "lose":
                 _force_result.pop(self.creator.id, None)
@@ -9195,10 +9223,10 @@ class BalloonView(BaseGameView):
                     "❌ Pump at least once before cashing out!", ephemeral=True)
                 return
             self.done = True
-            self.stop()
             self._update_buttons()
 
         await interaction.response.defer()
+        self.stop()
 
         async with self._lock:
             _force_result.pop(self.creator.id, None)
@@ -9319,6 +9347,7 @@ class SlotsView(BaseGameView):
         super().__init__(timeout=60)
         self.creator        = creator
         self.bet            = bet
+        self.bet_deducted   = False
         self._original_message = None
         self._spinning      = False
 
@@ -9347,21 +9376,19 @@ class SlotsView(BaseGameView):
 
         await interaction.response.defer()
 
-        conn = await get_conn()
-        try:
-            row = await get_user(conn, self.creator.id)
-            if not row or row["balance"] < self.bet:
-                await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
-                self._spinning = False
-                button.disabled = False
-                await self._original_message.edit(view=self)
-                return
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                self.bet, str(self.creator.id)
-            )
-        finally:
-            await release_conn(conn)
+        async with get_user_lock(self.creator.id):
+            conn = await get_conn()
+            try:
+                deducted = await deduct_balance_safe(conn, self.creator.id, self.bet)
+            finally:
+                await release_conn(conn)
+        if not deducted:
+            await interaction.followup.send("❌ Insufficient balance.", ephemeral=True)
+            self._spinning = False
+            button.disabled = False
+            await self._original_message.edit(view=self)
+            return
+        self.bet_deducted = True
         stamp_cooldown("slots", self.creator.id)
 
         reels = _slots_roll()
@@ -9678,12 +9705,13 @@ class CDColorButton(discord.ui.Button):
 class ColorDiceView(BaseGameView):
     def __init__(self, creator: discord.User, bet: int):
         super().__init__(timeout=60)
-        self.creator  = creator
-        self.bet      = bet
-        self.chosen   = None
-        self.done     = False
-        self.used     = False
-        self._lock    = asyncio.Lock()
+        self.creator       = creator
+        self.bet           = bet
+        self.chosen        = None
+        self.done          = False
+        self.used          = False
+        self.bet_deducted  = False  # True when bet has already been taken (set by cmd_colordice)
+        self._lock         = asyncio.Lock()
         self._original_message = None
         for emoji, name in CD_COLORS:
             self.add_item(CDColorButton(emoji, name))
@@ -9696,33 +9724,34 @@ class ColorDiceView(BaseGameView):
             if self.done or self.used:
                 await interaction.response.send_message("❌ Already rolling!", ephemeral=True)
                 return
-            self.used   = True
+            self.used = True
             self.chosen = chosen_name
             self.done   = True
             self.stop()
 
         await interaction.response.defer()
 
-        async with get_user_lock(self.creator.id):
-            conn = await get_conn()
-            try:
-                deducted = await deduct_balance_safe(conn, self.creator.id, self.bet)
-            finally:
-                await release_conn(conn)
-        if not deducted:
-            # Reset state so the game isn't dead — let them try again
-            async with self._lock:
-                self.used = False
-                self.done = False
-            for item in self.children:
-                item.disabled = False
-            await interaction.followup.send(
-                f"❌ Insufficient balance. Need **{format_amount(self.bet)}**.", ephemeral=True)
-            try:
-                await interaction.edit_original_response(view=self)
-            except Exception:
-                pass
-            return
+        # Only deduct if cmd_colordice didn't already take the bet
+        if not self.bet_deducted:
+            async with get_user_lock(self.creator.id):
+                conn = await get_conn()
+                try:
+                    deducted = await deduct_balance_safe(conn, self.creator.id, self.bet)
+                finally:
+                    await release_conn(conn)
+            if not deducted:
+                async with self._lock:
+                    self.used = False
+                    self.done = False
+                for item in self.children:
+                    item.disabled = False
+                await interaction.followup.send(
+                    f"❌ Insufficient balance. Need **{format_amount(self.bet)}**.", ephemeral=True)
+                try:
+                    await interaction.edit_original_response(view=self)
+                except Exception:
+                    pass
+                return
         msg = await interaction.original_response()
 
         slots = cd_roll_slots()
@@ -9864,7 +9893,7 @@ async def cmd_colordice(interaction: discord.Interaction, bet: str):
             await release_conn(conn)
         stamp_cooldown("colordice", interaction.user.id)
     view = ColorDiceView(interaction.user, amt)
-    view.used = True  # bet already deducted; mark to prevent double deduction
+    view.bet_deducted = True  # bet already deducted above; prevent double deduction in _pick
     await interaction.response.send_message(embed=view.game_embed() if False else cd_game_embed(amt), view=view)
     view._original_message = await interaction.original_response()
 
