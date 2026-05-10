@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -114,6 +113,8 @@ _HOUSE_EDGE_RANGES = {
     "rps":        (0.49, 0.54),
     "upgrader":   (0.49, 0.54),
     "balloon":    (0.49, 0.54),
+    "keno":       (0.49, 0.54),
+    "slots":      (0.49, 0.54),
 }
 
 def _rand_house_edge(game: str) -> float:
@@ -131,9 +132,9 @@ HOUSE_WIN_HILO       = 0.515  # reference only
 BJ_DEALER_STAND      = 17   # Dealer stands at this total — overridden per-game by random 17-18
 
 def bj_dealer_stand_threshold() -> int:
-    """Randomize the dealer's stand threshold between 17 and 18 each hand.
-    17 = standard casino rules, 18 = slight house lean. Removed 19-20 which were too aggressive."""
-    return random.randint(17, 18)
+    """Randomize the dealer's stand threshold between 17 and 19 each hand.
+    17 = standard casino rules, 18 = slight house lean, 19 = strong house lean."""
+    return random.randint(17, 19)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -8636,7 +8637,7 @@ def scratch_generate(force_win: bool = False, force_lose: bool = False) -> list:
     """
     if force_win:        win = True
     elif force_lose:     win = False
-    else:                win = random.random() < (1.0 - _rand_house_edge("scratch"))  # random 46-51% win rate
+    else:                win = random.random() < 0.45  # fixed 45% win rate (55/45 house edge)
 
     if win:
         winner = random.choices(SCRATCH_EMOJIS, weights=SCRATCH_WEIGHTS, k=1)[0]
@@ -9769,6 +9770,13 @@ class SlotsView(BaseGameView):
             reels = [best, best, best]
         elif forced == "lose":
             reels = [SLOTS_SYMBOLS[0], SLOTS_SYMBOLS[1], SLOTS_SYMBOLS[2]]
+        else:
+            # Apply house edge — if house wins this spin, reroll until no match
+            if random.random() < _rand_house_edge("slots"):
+                for _ in range(50):
+                    reels = _slots_roll()
+                    if _slots_payout(reels, self.bet)[0] == 0:
+                        break
 
         payout, result_label, mult = _slots_payout(reels, self.bet)
         won = payout > 0
@@ -11024,6 +11032,23 @@ async def cmd_withdraw(interaction: discord.Interaction):
         all_rows = await _get_stock(conn)
     finally:
         await release_conn(conn)
+
+    # Block if user already has a pending withdrawal — 1 at a time only
+    conn2 = await get_conn()
+    try:
+        pending = await conn2.fetchrow(
+            "SELECT id FROM withdrawals_queue WHERE user_id=$1 AND status='pending'",
+            str(interaction.user.id)
+        )
+    finally:
+        await release_conn(conn2)
+
+    if pending:
+        await interaction.followup.send(
+            "❌ You already have a pending withdrawal. You can only have **1 withdrawal at a time** — wait for it to be processed first.",
+            ephemeral=True
+        )
+        return
 
     affordable = [r for r in all_rows if r["unit_value"] <= bal and r["quantity"] > 0]
     if not affordable:
