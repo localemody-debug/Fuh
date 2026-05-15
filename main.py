@@ -307,6 +307,7 @@ LOGO_URL = os.getenv("LOGO_URL", "")  # Paste your bloxysab logo URL here or set
 COINFLIP_HEADS_GIF    = os.getenv("COINFLIP_HEADS_GIF",    "https://i.imgur.com/hgH4kFf.gif")
 COINFLIP_TAILS_GIF    = os.getenv("COINFLIP_TAILS_GIF",    "https://i.imgur.com/tUmaoHl.gif")
 COINFLIP_SPINNING_GIF = os.getenv("COINFLIP_SPINNING_GIF", "")  # Optional spinning GIF while flipping
+COINFLIP_GIF_DURATION = float(os.getenv("COINFLIP_GIF_DURATION", "4.0"))  # Seconds to wait for GIF to finish before showing result
 
 DICE_GIF = [
     os.getenv("DICE_GIF_1", "https://files.catbox.moe/k4776y.gif"),  # 1
@@ -4182,7 +4183,7 @@ class CoinflipView(BaseGameView):
             await msg.edit(embed=spin_embed, view=None)
         except Exception as e:
             print(f"[COINFLIP ANIM] embed edit failed: {e}")
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(COINFLIP_GIF_DURATION)  # wait for full GIF to play before showing result
 
         try:
             conn = await get_conn()
@@ -4330,7 +4331,7 @@ class ProgressiveCoinflipView(BaseGameView):
             await interaction.edit_original_response(embed=spin_embed)
         except Exception as e:
             print(f"[PCF ANIM] {e}")
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(COINFLIP_GIF_DURATION)  # wait for full GIF to play before showing result
 
         if won:
             self.rounds      += 1
@@ -5194,6 +5195,7 @@ class RouletteView(BaseGameView):
         else:
             house_wins = random.random() < _rand_house_edge("roulette")
             if house_wins:
+                losing_outcomes = [(e, n, m) for e, n, p, m in ROULETTE_OUTCOMES if n != chosen_name]
                 result_emoji, result_name, result_multi = random.choice(losing_outcomes)
             else:
                 result_emoji, result_name, result_multi = next(
@@ -5608,8 +5610,8 @@ class BaccaratView(BaseGameView):
                 f"**Result:** {bac_net_str}"
             )
         )
-        result_embed.add_field(name="Player",  value=f"{p_display} = {pt}", inline=True)
-        result_embed.add_field(name="Banker",  value=f"{b_display} = {bt}", inline=True)
+        result_embed.add_field(name="Player",  value=p_display, inline=True)
+        result_embed.add_field(name="Banker",  value=b_display, inline=True)
         result_embed.add_field(name="​",  value="​",              inline=True)
         result_embed.add_field(name="​",  value=result_label,          inline=False)
         result_embed.set_thumbnail(url=await get_avatar(self.creator))
@@ -5907,14 +5909,16 @@ class BlackjackView(BaseGameView):
                 f"**{win_icon} {win_title}** (`{net_str}` 💎)"
             )
         )
+        pt_label = f"**{bj_total(self.player_hand)}** (BUST)" if pt > 21 else f"**{pt}**"
+        dt_label = f"**{bj_total(self.dealer_hand)}** (BUST)" if dt > 21 else f"**{dt}**"
         embed.add_field(
             name="Your Hand:",
-            value=f"{bj_str(self.player_hand)}\nPlayer's Card Value: **{pt}**",
+            value=f"{bj_str(self.player_hand)}\nPlayer's Card Value: {pt_label}",
             inline=False
         )
         embed.add_field(
             name="Dealer's Hand:",
-            value=f"{bj_str(self.dealer_hand)}\nDealer's Card Value: **{dt}**",
+            value=f"{bj_str(self.dealer_hand)}\nDealer's Card Value: {dt_label}",
             inline=False
         )
         _brand_embed(embed)
@@ -6307,8 +6311,10 @@ class BlackjackDiceView(BaseGameView):
                 f"**{win_icon} {win_title}** (`{net_str}` 💎)"
             )
         )
-        bj_embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: **{pt}**", inline=False)
-        bj_embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice)}\nDealer's Card Value: **{dt}**", inline=False)
+        bjd_pt_label = f"**{bjd_total(self.player_dice)}** (BUST)" if pt > 21 else f"**{pt}**"
+        bjd_dt_label = f"**{bjd_total(self.dealer_dice)}** (BUST)" if dt > 21 else f"**{dt}**"
+        bj_embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: {bjd_pt_label}", inline=False)
+        bj_embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice)}\nDealer's Card Value: {bjd_dt_label}", inline=False)
         bj_embed.set_thumbnail(url=await get_avatar(self.creator))
         _brand_embed(bj_embed)
 
@@ -8255,6 +8261,14 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
+
+# ================================================================
+#  >>> END OF PART 1 — paste main_part2.py directly below here <<<
+# ================================================================
+# ================================================================
+#  >>> START OF PART 2 — paste directly below end of main_part1.py <<<
+# ================================================================
+
 # ================================================================
 #  KENO
 # ================================================================
@@ -8306,30 +8320,44 @@ def _keno_pick_weight(number: int, selected: set) -> float:
 
 def keno_rig_draw(selected: list, drawn_count: int = KENO_DRAWN) -> list:
     """
-    Exact mines_rig_board mechanism applied to keno.
-    Drawn numbers are weighted toward tiles adjacent to the player's picks
-    using the 5x5 grid adjacency model — same top-45% candidate pool as mines.
-    Near-misses are frequent; full hits are rare.
+    Heavily rigged keno draw — heavier house edge than mines.
+    Player's own picks are given weight 0.75 (below the baseline of 1.0),
+    making them less likely to be drawn. Non-selected adjacents get normal
+    weighting. Net effect: near-misses are common, full hits are rare.
     """
     all_tiles    = list(range(1, KENO_TILES + 1))
     selected_set = set(selected)
     unpicked     = [t for t in all_tiles if t not in selected_set]
 
-    # Score every unpicked tile by adjacency weight (mirrors mines_rig_board)
+    # Score every unpicked tile by adjacency weight
     weights = [(t, _keno_pick_weight(t, selected_set)) for t in unpicked]
     weights.sort(key=lambda x: x[1], reverse=True)  # highest weight first
 
-    # Top 45% of unpicked tiles are draw candidates — exactly mirrors mines
+    # Top 45% of unpicked tiles are draw candidates
     candidate_count = max(drawn_count, int(len(unpicked) * 0.45))
     candidate_count = min(candidate_count, len(unpicked))
     high_weight_unpicked = [t for t, _ in weights[:candidate_count]]
 
-    # Player's own picks are also in the pool (they're the "revealed gems" equivalent)
-    candidate_pool = list(selected_set) + high_weight_unpicked
-    candidate_pool = list(set(candidate_pool))
+    # Build weighted pool: player picks get 0.75 weight (below baseline),
+    # non-picked candidates get 1.0 — makes player picks less likely to land
+    pool_tiles   = list(selected_set) + high_weight_unpicked
+    pool_weights = [0.75 if t in selected_set else 1.0 for t in pool_tiles]
 
-    draw_from_pool = min(drawn_count, len(candidate_pool))
-    drawn = random.sample(candidate_pool, draw_from_pool)
+    draw_from_pool = min(drawn_count, len(pool_tiles))
+
+    # Weighted sampling without replacement
+    drawn = []
+    remaining_tiles   = list(pool_tiles)
+    remaining_weights = list(pool_weights)
+    for _ in range(draw_from_pool):
+        if not remaining_tiles:
+            break
+        total_w = sum(remaining_weights)
+        pick    = random.choices(remaining_tiles, weights=remaining_weights, k=1)[0]
+        idx     = remaining_tiles.index(pick)
+        drawn.append(pick)
+        remaining_tiles.pop(idx)
+        remaining_weights.pop(idx)
 
     # Fill remainder from leftover tiles if pool was too small
     if len(drawn) < drawn_count:
