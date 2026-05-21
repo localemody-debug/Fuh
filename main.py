@@ -8590,11 +8590,10 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
--e 
 # ================================================================
 #  >>> END OF PART 1 — paste main_part2.py directly below here <<<
 # ================================================================
--e # ================================================================
+# ================================================================
 #  >>> START OF PART 2 — paste directly below end of main_part1.py <<<
 # ================================================================
 
