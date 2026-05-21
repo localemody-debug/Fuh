@@ -513,23 +513,24 @@ async def init_db():
     if not DATABASE_URL:
         print("❌ DATABASE_URL not set!")
         return
-    try:
-        _pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            command_timeout=30,
-            ssl="require"
-        )
-    except Exception as e:
-
-        print(f"[ERROR] {type(e).__name__}: {e}")
-        _pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            command_timeout=30
-        )
+    for attempt in range(5):
+        try:
+            _pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                command_timeout=30,
+                ssl="require"
+            )
+            print(f"[DB] Connected successfully on attempt {attempt+1}")
+            break
+        except Exception as e:
+            print(f"[DB] Attempt {attempt+1} failed: {type(e).__name__}: {e}")
+            if attempt < 4:
+                await asyncio.sleep(5)
+    else:
+        print("[DB] ❌ All 5 connection attempts failed")
+        return
 
     async with _pool.acquire() as conn:
         await conn.execute("""
