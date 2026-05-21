@@ -50,14 +50,13 @@ async def _load_channel_ids():
             """Return the first text channel whose name contains fragment (case-insensitive)."""
             return next((c for c in guild.text_channels if fragment in c.name.lower()), None)
 
-        ch = find_ch("game-log");    LOG_CHANNEL_ID     = ch.id if ch else LOG_CHANNEL_ID
-        ch = find_ch("finance-log"); FINANCE_LOG_ID     = ch.id if ch else FINANCE_LOG_ID
-        ch = find_ch("invite-log");  INVITE_LOG_ID      = ch.id if ch else INVITE_LOG_ID
-        ch = find_ch("reward-log");  REWARD_LOG_ID      = ch.id if ch else REWARD_LOG_ID
-        ch = find_ch("tip-log");     TIP_LOG_ID         = ch.id if ch else TIP_LOG_ID
-        # Public tips channel is named "tips" or "🎁｜tips" — must NOT match "tip-log"
+        ch = find_ch("bloxysab-game-log");    LOG_CHANNEL_ID     = ch.id if ch else LOG_CHANNEL_ID
+        ch = find_ch("bloxysab-financial"); FINANCE_LOG_ID     = ch.id if ch else FINANCE_LOG_ID
+        ch = find_ch("bloxysab-invite-log");  INVITE_LOG_ID      = ch.id if ch else INVITE_LOG_ID
+        ch = find_ch("bloxysab-reward-log");  REWARD_LOG_ID      = ch.id if ch else REWARD_LOG_ID
+        ch = find_ch("bloxysab-tip-log");     TIP_LOG_ID         = ch.id if ch else TIP_LOG_ID
         ch = next((c for c in guild.text_channels
-                   if "tip" in c.name.lower() and "log" not in c.name.lower()), None)
+                   if "tips" in c.name.lower() and "log" not in c.name.lower() and "bloxysab" not in c.name.lower()), None)
         TIP_PUBLIC_LOG_ID = ch.id if ch else TIP_PUBLIC_LOG_ID
         # Vouches: target the public vouch channel (not the staff one)
         ch = find_ch("vouch");       VOUCHES_CHANNEL_ID = ch.id if ch else VOUCHES_CHANNEL_ID
@@ -109,7 +108,7 @@ _HOUSE_EDGE_RANGES = {
     "horserace":  (0.49, 0.54),
     "scratch":    (0.49, 0.54),
     "colordice":  (0.49, 0.54),
-    "blackjack":  (0.49, 0.54),
+    "blackjack":  (0.48, 0.54),
     "rps":        (0.49, 0.54),
     "upgrader":   (0.49, 0.54),
     "balloon":    (0.49, 0.54),
@@ -132,9 +131,9 @@ HOUSE_WIN_HILO       = 0.515  # reference only
 BJ_DEALER_STAND      = 17   # Dealer stands at this total — overridden per-game by random 17-18
 
 def bj_dealer_stand_threshold() -> int:
-    """Randomize the dealer's stand threshold between 17 and 19 each hand.
-    17 = standard casino rules, 18 = slight house lean, 19 = strong house lean."""
-    return random.randint(17, 19)
+    """Randomize the dealer's stand threshold between 17 and 18 each hand.
+    17 = standard casino rules, 18 = slight house lean."""
+    return random.randint(17, 18)
 
 GUILD_ID             = int(os.getenv("GUILD_ID", "1481262963569594423"))  # Set your server ID in env vars
 
@@ -1706,15 +1705,16 @@ async def _setup_guild_channels(guild: discord.Guild):
         ]),
         ("🔒 Staff", staff_only_ow(admin_role, mod_role, tmod_role), [
             ("🛡️｜staff-chat",   "Staff only chat.",           staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("📋｜mod-logs",     "Moderation logs.",           staff_only_ow(admin_role, mod_role),             False),
-            ("🎲｜game-log",     "Game results log.",          staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("💰｜finance-log",  "Deposits & withdrawals log.", staff_only_ow(admin_role, mod_role),            False),
-            ("📨｜invite-log",   "Invite rewards log.",        staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("🎁｜reward-log",   "Rain/promo/daily/boost log.",staff_only_ow(admin_role, mod_role, tmod_role), False),
-            ("💸｜tip-log",      "Admin tip log.",             staff_only_ow(admin_role, mod_role),            False),
+            ("📋｜bloxysab-mod-logs",     "Moderation logs.",           staff_only_ow(admin_role, mod_role),             False),
+            ("🎲｜bloxysab-game-log",     "Game results log.",          staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("💰｜bloxysab-financial",  "Deposits & withdrawals log.", staff_only_ow(admin_role, mod_role),            False),
+            ("📨｜bloxysab-invite-log",   "Invite rewards log.",        staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("🎁｜bloxysab-reward-log",   "Rain/promo/daily/boost log.",staff_only_ow(admin_role, mod_role, tmod_role), False),
+            ("💸｜bloxysab-tip-log",      "Admin tip log.",             staff_only_ow(admin_role, mod_role),            False),
         ]),
         ("Deposits",  staff_only_ow(admin_role, mod_role, tmod_role), []),
         ("Withdraws", staff_only_ow(admin_role, mod_role, tmod_role), []),
+        ("Support",   staff_only_ow(admin_role, mod_role, tmod_role), []),
     ]
 
     existing_categories = {c.name: c for c in guild.categories}
@@ -2333,7 +2333,7 @@ async def send_reward_log(embed: discord.Embed):
     if not ch_id:
         guild = bot.get_guild(GUILD_ID)
         if guild:
-            found = next((c for c in guild.text_channels if "reward-log" in c.name.lower()), None)
+            found = next((c for c in guild.text_channels if "bloxysab-reward-log" in c.name.lower()), None)
             if found: ch_id = found.id
     if not ch_id:
         return
@@ -2353,7 +2353,7 @@ async def send_log(embed: discord.Embed):
     if not ch_id:
         guild = bot.get_guild(GUILD_ID)
         if guild:
-            found = next((c for c in guild.text_channels if "game-log" in c.name.lower()), None)
+            found = next((c for c in guild.text_channels if "bloxysab-game-log" in c.name.lower()), None)
             if found: ch_id = found.id
     if not ch_id:
         return
@@ -2376,7 +2376,7 @@ async def send_finance_log(embed: discord.Embed):
     if not ch_id:
         guild = bot.get_guild(GUILD_ID)
         if guild:
-            found = next((c for c in guild.text_channels if "finance-log" in c.name.lower()), None)
+            found = next((c for c in guild.text_channels if "bloxysab-financial" in c.name.lower()), None)
             if found: ch_id = found.id
     if not ch_id:
         return
@@ -2399,7 +2399,7 @@ async def send_tip_log(embed: discord.Embed):
     if not tip_id:
         guild = bot.get_guild(GUILD_ID)
         if guild:
-            found = next((c for c in guild.text_channels if "tip-log" in c.name.lower()), None)
+            found = next((c for c in guild.text_channels if "bloxysab-tip-log" in c.name.lower()), None)
             if found: tip_id = found.id
     if tip_id:
         ch = bot.get_channel(tip_id)
@@ -2666,15 +2666,15 @@ async def cmd_balance(interaction: discord.Interaction):
     profit_str = f"+{format_amount(abs(net_profit))}" if net_profit >= 0 else f"-{format_amount(abs(net_profit))}"
     embed = discord.Embed(
         color=C_GOLD,
-        title=f"💎  {interaction.user.display_name}'s Balance",
         description=(
-            f"💰 Balance: **{format_amount(balance)}** 💎\n"
-            f"🎲 Wagered: **{format_amount(wagered)}** 💎\n"
-            f"📉 Profit: **{profit_str}** 💎\n"
+            f"## 💎 {interaction.user.display_name}'s Balance\n"
             f"\n"
-            f"Use /deposit to obtain balance\n"
-            f"Use /stock to view items available for withdraw\n"
-            f"5M ≈ 40M–50M/s"
+            f"💰 **Balance:** {format_amount(balance)} 💎\n"
+            f"🎲 **Wagered:** {format_amount(wagered)} 💎\n"
+            f"📊 **Profit:** {profit_str} 💎\n"
+            f"🏆 **Wins:** {wins}  •  💀 **Losses:** {losses}  •  🔥 **Streak:** {streak}\n"
+            f"\n"
+            f"*Use /deposit to top up  •  /stock to withdraw*"
         )
     )
     embed.set_thumbnail(url=await get_avatar(interaction.user))
@@ -2729,11 +2729,12 @@ async def cmd_rank(interaction: discord.Interaction):
     embed = discord.Embed(
         color=display_color,
         description=(
-            f"## {display_emoji}  {display_name.upper()}\n"
-            f"{interaction.user.mention}\n"
-            f"─────────────────────────────\n"
-            f"**Wagered** `{format_amount(wagered)}`\n"
-            f"**Next Rank** `{next_label}`{need_str}\n"
+            f"## {display_emoji} {display_name}\n"
+            f"\n"
+            f"👤 {interaction.user.mention}\n"
+            f"🎲 **Wagered:** {format_amount(wagered)} 💎\n"
+            f"🏁 **Next Rank:** {next_label}{need_str}\n"
+            f"\n"
             f"`{bar_str}` {pct:.0f}%"
         )
     )
@@ -2760,13 +2761,12 @@ async def cmd_ranks(interaction: discord.Interaction):
 
     embed = discord.Embed(
         color=C_GOLD,
-        title="✦  Sabpot — All Ranks",
         description=(
-            "**Wager Ranks** — earned by wagering gems\n"
-            "─────────────────────────────\n"
+            f"## 🏅 All Ranks\n"
+            f"\n"
+            f"**Wager Ranks** — earned by wagering gems\n"
             + "\n".join(lines)
-            + "\n\n**Leaderboard Roles** — assigned hourly, not shown in /rank\n"
-            "─────────────────────────────\n"
+            + f"\n\n**Leaderboard Roles** — assigned hourly\n"
             + "\n".join(lb_lines)
         )
     )
@@ -2809,13 +2809,16 @@ async def cmd_leaderboard(interaction: discord.Interaction, sort: str = "wagered
                 lines.append(f"{MEDAL[i]} {rank_e} <@{r['user_id']}> • **{val}**")
             else:
                 lines.append(f"#{i+1} {BOLT} <@{r['user_id']}> • **{val}**")
-        lbl = "Balance" if lb_sort == "balance" else "Total Wager"
+        lbl = "Balance" if lb_sort == "balance" else "Total Wagered"
         e   = discord.Embed(
             color=C_GOLD,
-            title=f"🎰  Leaderboard - {lbl}",
-            description="\n".join(lines)
+            description=(
+                f"## 🏆 Leaderboard — {lbl}\n"
+                f"\n"
+                + "\n".join(lines)
+            )
         )
-        e.set_footer(text=f"SABFlippy • Use /rank to check your stats | Today at {datetime.now(timezone.utc).strftime('%H:%M')}")
+        e.set_footer(text=f"Use /rank to check your stats  •  Updated now")
         _brand_embed(e)
         return e
 
@@ -2906,12 +2909,13 @@ async def cmd_daily(interaction: discord.Interaction):
     embed = discord.Embed(
         color=C_WIN,
         description=(
-            f"## 🎁  DAILY BONUS\n"
-            f"{interaction.user.mention}  ·  {emoji} **{rank_name}**\n"
-            f"╔══════════════════════╗\n"
-            f"║  + {format_amount(reward):>19}  ║\n"
-            f"║  bal  {format_amount(new_bal):>16}  ║\n"
-            f"╚══════════════════════╝"
+            f"## 🎁 Daily Bonus\n"
+            f"\n"
+            f"✅ **Claimed!**\n"
+            f"*{emoji} {rank_name} daily reward received.*\n"
+            f"\n"
+            f"💵 **Reward:** +{format_amount(reward)} 💎\n"
+            f"💰 **New Balance:** {format_amount(new_bal)} 💎\n"
         )
     )
     embed.set_thumbnail(url=await get_avatar(interaction.user))
@@ -2983,13 +2987,16 @@ async def cmd_tip(interaction: discord.Interaction, user: discord.Member, amount
     embed = discord.Embed(
         color=C_WIN,
         description=(
-            f"## 💸  Tip Sent\n"
-            f"**{interaction.user.display_name}** → **{user.display_name}**\n"
-            f"Amount: **{format_amount(amt)} 💎**"
+            f"## 💸 Tip Transaction\n"
+            f"\n"
+            f"✅ **Tip Sent!**\n"
+            f"*{interaction.user.mention} → {user.mention}*\n"
+            f"\n"
+            f"💵 **Amount:** {format_amount(amt)} 💎\n"
         )
     )
-    embed.add_field(name="Your Balance",  value=f"**{format_amount(sender_bal)}** 💎", inline=True)
-    embed.add_field(name="Their Balance", value=f"**{format_amount(recv_bal)}** 💎",   inline=True)
+    embed.add_field(name=f"👤 {interaction.user.display_name}", value=f"{format_amount(sender_bal)} 💎", inline=True)
+    embed.add_field(name=f"👤 {user.display_name}",            value=f"{format_amount(recv_bal)} 💎",   inline=True)
     _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
 
@@ -4166,12 +4173,12 @@ class CoinflipView(BaseGameView):
         spin_embed = discord.Embed(
             color=C_GOLD,
             description=(
-                f"## 🪙  COINFLIP — FLIPPING...\n"
-                f"┌─────────────────────────┐\n"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
-                f"│ 🎯 **Your Side** • {self.choice}\n"
-                f"│ ⏳ **Flipping the coin...**\n"
-                f"└─────────────────────────┘"
+                f"## 🪙 Coinflip\n"
+                f"\n"
+                f"⏳ **Flipping the coin...**\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"🎯 **Your Side:** {self.choice}\n"
             )
         )
         if spin_gif_valid:
@@ -4220,25 +4227,31 @@ class CoinflipView(BaseGameView):
         coin_icon = "🟡" if result == "Heads" else "⬛"
         if creator_won:
             result_color = C_WIN
-            net          = payout - self.bet  # after-tax profit
-            outcome_line = f"│ ✅ **You Win** • +{format_amount(net)} 💎"
+            net          = payout - self.bet
+            net_line     = f"💵 **Net Win:** +{format_amount(net)} 💎"
+            outcome_text = "✅ **You Win!**"
+            explain_line = f"*The coin landed **{result}** — your pick!*"
         else:
             result_color = C_LOSS
-            outcome_line = f"│ ❌ **You Lose** • -{format_amount(self.bet)} 💎"
+            net_line     = f"📉 **Net Loss:** -{format_amount(self.bet)} 💎"
+            outcome_text = "❌ **You Lost!**"
+            explain_line = f"*The coin landed **{result}** — not your pick.*"
 
         result_embed = discord.Embed(
             color=result_color,
             description=(
-                f"## 🪙  COINFLIP — {result.upper()} {coin_icon}\n"
-                f"┌─────────────────────────┐\n"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
-                f"│ 🎯 **Your Side** • {self.choice}\n"
-                f"│ 🪙 **Result** • {result}\n"
-                f"│ 🏆 **Winner** • {winner_mention}\n"
-                f"{outcome_line}\n"
-                f"└─────────────────────────┘"
+                f"## 🪙 Coinflip Results\n"
+                f"\n"
+                f"{outcome_text}\n"
+                f"{explain_line}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"{net_line}\n"
             )
         )
+        result_embed.add_field(name="🎯 Your Side", value=self.choice, inline=True)
+        result_embed.add_field(name=f"🪙 Result",   value=f"{result} {coin_icon}", inline=True)
+        result_embed.add_field(name="🏆 Winner",    value=winner_mention, inline=True)
         result_embed.set_thumbnail(url=await get_avatar(self.creator))
         if gif_valid:
             result_embed.set_image(url=gif_url)
@@ -4314,12 +4327,12 @@ class ProgressiveCoinflipView(BaseGameView):
         spin_embed = discord.Embed(
             color=C_GOLD,
             description=(
-                f"## 🪙  PROGRESSIVE COINFLIP — FLIPPING...\n"
-                f"┌─────────────────────────┐\n"
-                f"│ 💰 **Pot** • {format_amount(self.current_pot)} 💎\n"
-                f"│ 🔄 **Round** • {self.rounds + 1}\n"
-                f"│ ⏳ **Flipping the coin...**\n"
-                f"└─────────────────────────┘"
+                f"## 🪙 Progressive Coinflip\n"
+                f"\n"
+                f"⏳ **Flipping the coin...**\n"
+                f"\n"
+                f"💵 **Pot:** {format_amount(self.current_pot)} 💎\n"
+                f"🔄 **Round:** {self.rounds + 1}\n"
             )
         )
         if spin_gif_valid:
@@ -5213,12 +5226,12 @@ class RouletteView(BaseGameView):
         spin_e = discord.Embed(
             color=C_GOLD,
             description=(
-                f"## ◉  ROULETTE — ROLLING...\n"
-                f"┌─────────────────────────┐\n"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
-                f"│ 🎯 **Pick** • {chosen_emoji} {chosen_name}\n"
-                f"│ 🌀 **Spinning the wheel...**\n"
-                f"└─────────────────────────┘"
+                f"## ◉ Roulette\n"
+                f"\n"
+                f"🌀 **Spinning the wheel...**\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"🎯 **Your Pick:** {chosen_emoji} {chosen_name}\n"
             )
         )
         if gif_valid:
@@ -5250,23 +5263,22 @@ class RouletteView(BaseGameView):
             print(f"[ROULETTE DB ERROR] {_db_err}")
 
         # ── Result embed ──────────────────────────────────────────────────────
-        profit_str   = f"+{format_amount(payout - self.bet)}" if won else f"-{format_amount(self.bet)}"
-        outcome_line = "🏆 YOU WIN!" if won else "💀 YOU LOST!"
-        result_color_icon = "🟢" if won else "🔴"
+        net_str = f"+{format_amount(payout - self.bet)}" if won else f"-{format_amount(self.bet)}"
 
         result_e = discord.Embed(color=color)
-        result_e.set_author(name=f"{self.creator.display_name}  ·  Roulette",
-                            icon_url=self.creator.display_avatar.url)
         result_e.description = (
-            f"## {result_color_icon} {outcome_line}\n"
-            f"┌─────────────────────────┐\n"
-            f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\n"
-            f"│ 🎯 **Pick** • {chosen_emoji} {chosen_name}\n"
-            f"│ 🎡 **Landed** • {result_emoji} {result_name}\n"
-            f"│ 📊 **Multi** • {result_multi}×\n"
-            f"│ 💸 **Profit** • {profit_str} 💎\n"
-            f"└─────────────────────────┘"
+            f"## ◉ Roulette Results\n"
+            f"\n"
+            f"{'✅' if won else '❌'} **{'You Won!' if won else 'You Lost!'}**\n"
+            f"*The wheel landed on {result_emoji} **{result_name}**{'!' if won else ', not your pick.'}*\n"
+            f"\n"
+            f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+            f"{'💵 Net Win:' if won else '📉 Net Loss:'} {net_str} 💎\n"
         )
+        result_e.add_field(name="🎯 Your Pick",  value=f"{chosen_emoji} {chosen_name}", inline=True)
+        result_e.add_field(name="🎡 Landed",     value=f"{result_emoji} {result_name}", inline=True)
+        result_e.add_field(name="📊 Multiplier", value=f"{result_multi}×",             inline=True)
+        result_e.set_thumbnail(url=self.creator.display_avatar.url)
         if gif_valid:
             result_e.set_image(url=gif_url)
         _brand_embed(result_e)
@@ -5594,26 +5606,40 @@ class BaccaratView(BaseGameView):
             return " ".join(parts)
         p_display = bac_str(ph)
         b_display = bac_str(bh)
+
         if is_push:
-            result_label = "It's a Tie!\n🤝 It's a tie!"
+            outcome_icon  = "🔁"
+            outcome_title = "Tie!"
+            explain_line  = f"*Both Player and Banker drew **{bac_total(ph)}**. Bet returned.*"
+            net_label     = "💵 Net:"
         elif won:
-            result_label = f"**{bet_type} Wins!**\n🏆 {bet_type} wins this round!"
+            outcome_icon  = "✅"
+            outcome_title = "You Won!"
+            explain_line  = f"*{bet_type} wins — **{bac_total(ph) if bet_type == 'Player' else bac_total(bh)}** vs **{bac_total(bh) if bet_type == 'Player' else bac_total(ph)}**.*"
+            net_label     = "💵 Net Win:"
         else:
-            result_label = f"**{winner} Wins!**\n🏦 {winner} wins this round!"
+            outcome_icon  = "❌"
+            outcome_title = "You Lost!"
+            explain_line  = f"*{winner} wins — **{bac_total(bh) if winner == 'Banker' else bac_total(ph)}** vs **{bac_total(ph) if winner == 'Banker' else bac_total(bh)}**.*"
+            net_label     = "📉 Net Loss:"
+
+        net     = (int(self.bet * result_multi) - self.bet) if won else (-self.bet if not is_push else 0)
+        net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
 
         result_embed = discord.Embed(
             color=color,
             description=(
-                f"## 🎴  Baccarat Game\n"
-                f"**Bet:** {format_amount(self.bet)} 💎\n"
-                f"**On:** {bet_type}\n"
-                f"**Result:** {bac_net_str}"
+                f"## 🎴 Baccarat Results\n"
+                f"\n"
+                f"{outcome_icon} **{outcome_title}**\n"
+                f"{explain_line}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎  •  **On:** {bet_type}\n"
+                f"{net_label} {net_str} 💎\n"
             )
         )
-        result_embed.add_field(name="Player",  value=p_display, inline=True)
-        result_embed.add_field(name="Banker",  value=b_display, inline=True)
-        result_embed.add_field(name="​",  value="​",              inline=True)
-        result_embed.add_field(name="​",  value=result_label,          inline=False)
+        result_embed.add_field(name=f"👤 Player ({bac_total(ph)})", value=p_display, inline=True)
+        result_embed.add_field(name=f"🏦 Banker ({bac_total(bh)})", value=b_display, inline=True)
         result_embed.set_thumbnail(url=await get_avatar(self.creator))
         _brand_embed(result_embed)
 
@@ -5804,24 +5830,25 @@ class BlackjackView(BaseGameView):
         player_cards = bj_str(self.player_hand)
         dealer_cards = bj_str(self.dealer_hand, hide_dealer)
 
-        embed = discord.Embed(
-            color=C_GOLD,
-            title="🃏 Blackjack",
-            description=(
-                f"Bet: **{format_amount(total_bet)}** 💎\n"
-                f"Potential Winnings: **{format_amount(potential)}** 💎"
-            )
+        description = (
+            f"## 🃏 Blackjack\n"
+            f"\n"
+            f"💵 **Wager:** {format_amount(total_bet)} 💎\n"
+            f"🏆 **Potential:** {format_amount(potential)} 💎\n"
+        )
+        embed = discord.Embed(color=C_GOLD, description=description)
+        embed.add_field(
+            name=f"🎩 Dealer ({dlabel})",
+            value=dealer_cards,
+            inline=True
         )
         embed.add_field(
-            name="Your Hand:",
-            value=f"{player_cards}\nPlayer's Card Value: **{pt}**",
-            inline=False
+            name=f"👤 You ({pt})",
+            value=player_cards,
+            inline=True
         )
-        embed.add_field(
-            name="Dealer's Hand:",
-            value=f"{dealer_cards}\nDealer's Card Value: **{dlabel}**",
-            inline=False
-        )
+        bj_status = "🃏 Blackjack!" if player_bj else "Hit, Stand, or Double?"
+        embed.set_footer(text=bj_status)
         _brand_embed(embed)
         return embed
 
@@ -5857,8 +5884,17 @@ class BlackjackView(BaseGameView):
 
         # Skip dealer draw if player busted
         if pt <= 21:
+            house_edge_active = random.random() < _rand_house_edge("blackjack")
             while bj_total(self.dealer_hand) < self._dealer_stand:
-                self.dealer_hand.append(self.deck.pop())
+                next_card = self.deck.pop()
+                # If house edge is active and drawing this card would bust the dealer,
+                # keep drawing until we find a safe card (max 3 attempts) to rig in dealer's favor
+                if house_edge_active and bj_total(self.dealer_hand + [next_card]) > 21:
+                    safe_cards = [c for c in self.deck[-8:] if bj_total(self.dealer_hand + [c]) <= 21]
+                    if safe_cards:
+                        next_card = random.choice(safe_cards)
+                        self.deck.remove(next_card)
+                self.dealer_hand.append(next_card)
                 await asyncio.sleep(0.5)
                 try:
                     await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
@@ -5898,29 +5934,43 @@ class BlackjackView(BaseGameView):
 
         net = payout - total_bet
         net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
-        win_icon  = "🏆" if won else ("🔁" if is_push else "💀")
-        win_title = "YOU WIN" if won else ("PUSH" if is_push else "YOU LOSE")
-        embed = discord.Embed(
-            color=color,
-            title=f"🃏 Blackjack — {result}",
-            description=(
-                f"Bet: **{format_amount(total_bet)}** 💎\n"
-                f"{'Payout' if won else 'Result'}: **{format_amount(payout)}** 💎\n"
-                f"**{win_icon} {win_title}** (`{net_str}` 💎)"
-            )
+
+        if won:
+            outcome_icon  = "✅"
+            outcome_title = "You Won!"
+            net_label     = "💵 Net Win:"
+            explain_line  = f"*You beat the dealer with **{pt}** against their **{dt}**.*"
+        elif is_push:
+            outcome_icon  = "🔁"
+            outcome_title = "Push — Tie!"
+            net_label     = "💵 Net:"
+            explain_line  = f"*Both you and the dealer drew **{pt}**. Bet returned.*"
+        else:
+            outcome_icon  = "❌"
+            outcome_title = "You Lost!"
+            net_label     = "📉 Net Loss:"
+            if pt > 21:
+                explain_line = f"*You busted with **{bj_total(self.player_hand)}**.*"
+            else:
+                explain_line = f"*The dealer drew to **{dt}** and beat your **{pt}**.*"
+
+        description = (
+            f"## 🃏 Blackjack Results\n"
+            f"\n"
+            f"{outcome_icon} **{outcome_title}**\n"
+            f"{explain_line}\n"
+            f"\n"
+            f"💵 **Wager:** {format_amount(total_bet)} 💎\n"
+            f"{net_label} {net_str} 💎\n"
         )
-        pt_label = f"**{bj_total(self.player_hand)}** (BUST)" if pt > 21 else f"**{pt}**"
-        dt_label = f"**{bj_total(self.dealer_hand)}** (BUST)" if dt > 21 else f"**{dt}**"
-        embed.add_field(
-            name="Your Hand:",
-            value=f"{bj_str(self.player_hand)}\nPlayer's Card Value: {pt_label}",
-            inline=False
-        )
-        embed.add_field(
-            name="Dealer's Hand:",
-            value=f"{bj_str(self.dealer_hand)}\nDealer's Card Value: {dt_label}",
-            inline=False
-        )
+        embed = discord.Embed(color=color, description=description)
+
+        pt_label = f"{bj_total(self.player_hand)} BUST" if pt > 21 and bj_total(self.player_hand) > 21 else (f"{bj_total(self.player_hand)}" if pt > 21 else str(pt))
+        dt_label = f"{bj_total(self.dealer_hand)} BUST" if dt > 21 and bj_total(self.dealer_hand) > 21 else str(bj_total(self.dealer_hand))
+
+        embed.add_field(name=f"🎩 Dealer ({dt_label})", value=bj_str(self.dealer_hand), inline=True)
+        embed.add_field(name=f"👤 You ({pt_label})",    value=bj_str(self.player_hand), inline=True)
+        embed.set_thumbnail(url=await get_avatar(self.creator))
         _brand_embed(embed)
 
         try:
@@ -6216,20 +6266,20 @@ class BlackjackDiceView(BaseGameView):
     def game_embed(self, hide_dealer=True) -> discord.Embed:
         pt        = bjd_total(self.player_dice)
         dt_shown  = self.dealer_dice[0] if hide_dealer else bjd_total(self.dealer_dice)
-        dlabel    = f"{dt_shown}?" if hide_dealer else str(bjd_total(self.dealer_dice))
+        dlabel    = f"?" if hide_dealer else str(bjd_total(self.dealer_dice))
         total_bet = self.bet + self.extra_bet
         player_bj = bjd_is_blackjack(self.player_dice) and self.extra_bet == 0
         potential = int(total_bet * 2.5) if player_bj else total_bet * 2
-        embed = discord.Embed(
-            color=C_GOLD,
-            title="🎲 Blackjack Dice",
-            description=(
-                f"Bet: **{format_amount(total_bet)}** 💎\n"
-                f"Potential Winnings: **{format_amount(potential)}** 💎"
-            )
+
+        description = (
+            f"## 🎲 Blackjack Dice\n"
+            f"\n"
+            f"💵 **Wager:** {format_amount(total_bet)} 💎\n"
+            f"🏆 **Potential:** {format_amount(potential)} 💎\n"
         )
-        embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: **{pt}**", inline=False)
-        embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice, hide_dealer)}\nDealer's Card Value: **{dlabel}**", inline=False)
+        embed = discord.Embed(color=C_GOLD, description=description)
+        embed.add_field(name=f"🎩 Dealer ({dlabel})", value=bjd_str(self.dealer_dice, hide_dealer), inline=True)
+        embed.add_field(name=f"👤 You ({pt})",        value=bjd_str(self.player_dice),              inline=True)
         _brand_embed(embed)
         return embed
 
@@ -6263,8 +6313,19 @@ class BlackjackDiceView(BaseGameView):
 
         # Skip dealer draw if player already busted
         if pt <= 21:
+            house_edge_active = random.random() < _rand_house_edge("blackjack")
             while bjd_total(self.dealer_dice) < self._dealer_stand:
-                self.dealer_dice.append(bjd_roll())
+                next_roll = bjd_roll()
+                # If house edge active and this roll would bust dealer, reroll once for a safe value
+                if house_edge_active and bjd_total(self.dealer_dice + [next_roll]) > 21:
+                    safe_roll = next_roll
+                    for _ in range(4):
+                        candidate = bjd_roll()
+                        if bjd_total(self.dealer_dice + [candidate]) <= 21:
+                            safe_roll = candidate
+                            break
+                    next_roll = safe_roll
+                self.dealer_dice.append(next_roll)
                 await asyncio.sleep(0.4)
                 try:
                     await self._original_message.edit(embed=self.game_embed(hide_dealer=False))
@@ -6300,21 +6361,43 @@ class BlackjackDiceView(BaseGameView):
 
         net     = payout - total_bet
         net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
-        win_icon  = "🏆" if won else ("🔁" if is_push else "💀")
-        win_title = "YOU WIN" if won else ("PUSH" if is_push else "YOU LOSE")
+
+        if won:
+            outcome_icon  = "✅"
+            outcome_title = "You Won!"
+            net_label     = "💵 Net Win:"
+            explain_line  = f"*You beat the dealer with **{pt}** against their **{dt}**.*"
+        elif is_push:
+            outcome_icon  = "🔁"
+            outcome_title = "Push — Tie!"
+            net_label     = "💵 Net:"
+            explain_line  = f"*Both drew **{pt}**. Bet returned.*"
+        else:
+            outcome_icon  = "❌"
+            outcome_title = "You Lost!"
+            net_label     = "📉 Net Loss:"
+            if pt > 21:
+                explain_line = f"*You busted with **{bjd_total(self.player_dice)}**.*"
+            else:
+                explain_line = f"*The dealer drew to **{dt}** and beat your **{pt}**.*"
+
+        bjd_pt_label = f"{bjd_total(self.player_dice)} BUST" if pt > 21 and bjd_total(self.player_dice) > 21 else (f"{bjd_total(self.player_dice)}" if pt > 21 else str(pt))
+        bjd_dt_label = f"{bjd_total(self.dealer_dice)} BUST" if dt > 21 and bjd_total(self.dealer_dice) > 21 else str(bjd_total(self.dealer_dice))
+
         bj_embed = discord.Embed(
             color=color,
-            title=f"🎲 Blackjack Dice — {result}",
             description=(
-                f"Bet: **{format_amount(total_bet)}** 💎\n"
-                f"{'Payout' if won else 'Result'}: **{format_amount(payout)}** 💎\n"
-                f"**{win_icon} {win_title}** (`{net_str}` 💎)"
+                f"## 🎲 Blackjack Dice Results\n"
+                f"\n"
+                f"{outcome_icon} **{outcome_title}**\n"
+                f"{explain_line}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(total_bet)} 💎\n"
+                f"{net_label} {net_str} 💎\n"
             )
         )
-        bjd_pt_label = f"**{bjd_total(self.player_dice)}** (BUST)" if pt > 21 else f"**{pt}**"
-        bjd_dt_label = f"**{bjd_total(self.dealer_dice)}** (BUST)" if dt > 21 else f"**{dt}**"
-        bj_embed.add_field(name="Your Hand:", value=f"{bjd_str(self.player_dice)}\nPlayer's Card Value: {bjd_pt_label}", inline=False)
-        bj_embed.add_field(name="Dealer's Hand:", value=f"{bjd_str(self.dealer_dice)}\nDealer's Card Value: {bjd_dt_label}", inline=False)
+        bj_embed.add_field(name=f"🎩 Dealer ({bjd_dt_label})", value=bjd_str(self.dealer_dice), inline=True)
+        bj_embed.add_field(name=f"👤 You ({bjd_pt_label})",    value=bjd_str(self.player_dice), inline=True)
         bj_embed.set_thumbnail(url=await get_avatar(self.creator))
         _brand_embed(bj_embed)
 
@@ -6778,11 +6861,39 @@ class WarView(BaseGameView):
 "
         )
 
-        result_embed = discord.Embed(color=color, description=f"## ⚔️  WAR — {title}\n{result_desc(creator_won if not is_tie else False, is_tie, self.bet, payout)}")
-        result_embed.add_field(name=f"🃏 {self.creator.display_name}", value=f"**{war_card_str(creator_card)}**", inline=True)
-        result_embed.add_field(name=f"🃏 {opponent_name}",             value=f"**{war_card_str(opponent_card)}**", inline=True)
-        result_embed.add_field(name="💰 Bet",    value=f"**{format_amount(self.bet)} 💎**",  inline=True)
-        result_embed.add_field(name="🎁 Payout", value=f"**{format_amount(payout)} 💎**",   inline=True)
+        net     = payout - self.bet
+        net_str = f"+{format_amount(net)}" if net > 0 else (f"-{format_amount(abs(net))}" if net < 0 else "±0")
+
+        if creator_won:
+            outcome_icon  = "✅"
+            outcome_title = "You Won!"
+            net_label     = "💵 Net Win:"
+            explain_line  = f"*Your **{war_card_str(creator_card)}** beat {opponent_name}'s **{war_card_str(opponent_card)}**.*"
+        elif is_tie:
+            outcome_icon  = "🔁"
+            outcome_title = "War — Tie!"
+            net_label     = "💵 Net:"
+            explain_line  = f"*Both drew **{war_card_str(creator_card)}**. Going to War!*"
+        else:
+            outcome_icon  = "❌"
+            outcome_title = "You Lost!"
+            net_label     = "📉 Net Loss:"
+            explain_line  = f"*{opponent_name}'s **{war_card_str(opponent_card)}** beat your **{war_card_str(creator_card)}**.*"
+
+        result_embed = discord.Embed(
+            color=color,
+            description=(
+                f"## ⚔️ War Results\n"
+                f"\n"
+                f"{outcome_icon} **{outcome_title}**\n"
+                f"{explain_line}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"{net_label} {net_str} 💎\n"
+            )
+        )
+        result_embed.add_field(name=f"👤 {self.creator.display_name}", value=war_card_str(creator_card), inline=True)
+        result_embed.add_field(name=f"⚔️ {opponent_name}",            value=war_card_str(opponent_card), inline=True)
         result_embed.set_thumbnail(url=await get_avatar(self.creator))
         _brand_embed(result_embed)
         await asyncio.sleep(0.3)
@@ -6955,30 +7066,18 @@ class HiloView(BaseGameView):
         guess_word = f"{guesses} Correct Guess{'es' if guesses != 1 else ''}"
 
         description = (
-            f"💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-            f"📊 **Multiplier** • {mult_str}\
-"
-            f"\
-"
-            f"┌─────────────────────────┐\
-"
-            f"│ 🎴 **Current Card**\
-"
-            f"│ {card_str}\
-"
-            f"│\
-"
-            f"│ ❓ **Next Card**\
-"
-            f"│ ?\
-"
-            f"└─────────────────────────┘\
-"
-            f"\
-"
-            f"💵 **Next Guess** • {next_str}\
-"
+            f"💰 **Bet** • {format_amount(self.bet)} 💎\n"
+            f"📊 **Multiplier** • {mult_str}\n"
+            f"\n"
+            f"┌─────────────────────────┐\n"
+            f"│ 🎴 **Current Card**\n"
+            f"│ {card_str}\n"
+            f"│\n"
+            f"│ ❓ **Next Card**\n"
+            f"│ ?\n"
+            f"└─────────────────────────┘\n"
+            f"\n"
+            f"💵 **Next Guess** • {next_str}\n"
         )
         embed = discord.Embed(color=C_GOLD, description=f"## 🃏  HI-LO\n{description}")
         embed.set_footer(text=f"🎯 {guess_word} • Will the next card be higher or lower?")
@@ -7066,17 +7165,19 @@ class HiloView(BaseGameView):
                 guesses    = self.rounds_won
                 guess_word = f"{guesses} Correct Guess{'es' if guesses != 1 else ''}"
                 lose_desc  = (
-                    f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                    f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                    f"💔 **Loss** — {format_amount(self.bet)} 💎\n"
-                    f"🎯 **Correct Guesses** — {guesses}\n"
+                    f"## 🃏 HI-LO Results\n"
                     f"\n"
-                    f"Your Card: {hilo_card_str(prev_card)}  →  Next: {hilo_card_str(new_card)}"
+                    f"❌ **Wrong Guess!**\n"
+                    f"*Your card was {hilo_card_str(prev_card)}, next was {hilo_card_str(new_card)}.*\n"
+                    f"\n"
+                    f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                    f"📉 **Net Loss:** -{format_amount(self.bet)} 💎\n"
+                    f"🎯 **Correct Guesses:** {guesses}\n"
                 )
-                lose_embed = discord.Embed(
-                    color=C_LOSS,
-                    description=f"## ✗  WRONG GUESS!\n{lose_desc}"
-                )
+                lose_embed = discord.Embed(color=C_LOSS, description=lose_desc)
+                lose_embed.add_field(name=f"🎴 Your Card", value=hilo_card_str(prev_card), inline=True)
+                lose_embed.add_field(name=f"❓ Next Card", value=hilo_card_str(new_card),  inline=True)
+                lose_embed.set_footer(text=f"🎯 {guess_word} • Game Ended")
                 _brand_embed(lose_embed)
 
                 conn = await get_conn()
@@ -7151,16 +7252,23 @@ class HiloView(BaseGameView):
 
             guesses    = self.rounds_won
             guess_word = f"{guesses} Correct Guess{'es' if guesses != 1 else ''}"
-            win_desc   = (
-                f"💰 **Bet** — {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier** — {self.current_mult:.2f}x\n"
-                f"🏆 **Payout** — {format_amount(payout)} 💎\n"
-                f"🎯 **Correct Guesses** — {guesses}"
-            )
+            net        = payout - self.bet
+            net_str    = f"+{format_amount(net)}" if net > 0 else f"-{format_amount(abs(net))}"
             win_embed = discord.Embed(
                 color=C_WIN,
-                description=f"## 🎴  HI-LO — CASHED OUT\n{win_desc}"
+                description=(
+                    f"## 🃏 HI-LO Results\n"
+                    f"\n"
+                    f"✅ **Cashed Out!**\n"
+                    f"*You locked in {guesses} correct guess{'es' if guesses != 1 else ''} at **{self.current_mult:.2f}x**.*\n"
+                    f"\n"
+                    f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                    f"💵 **Net Win:** {net_str} 💎\n"
+                    f"🎯 **Correct Guesses:** {guesses}\n"
+                )
             )
+            win_embed.add_field(name="🎴 Final Card", value=hilo_card_str(self.current_card), inline=True)
+            win_embed.add_field(name="📊 Multiplier", value=f"{self.current_mult:.2f}x",      inline=True)
             _brand_embed(win_embed)
 
             try:
@@ -7374,28 +7482,36 @@ class TowersView(BaseGameView):
 
     def game_embed(self, outcome: str = "playing") -> discord.Embed:
         if outcome == "playing":
-            color = C_BLUE
-            title = "🗼  Towers"
+            color      = C_BLUE
+            title_line = "🗼 TOWERS"
         elif outcome == "win":
-            color = C_WIN
-            title = "🗼  Towers - Cashed Out"
+            color      = C_WIN
+            title_line = "🎉 VICTORY!"
         elif outcome == "bomb":
-            color = C_LOSS
-            title = "🗼  Towers - 💥 Boom"
+            color      = C_LOSS
+            title_line = "💥 BOOM — You Hit a Bomb!"
         else:
-            color = C_VIP
-            title = "🗼  Towers - Cleared!"
+            color      = C_VIP
+            title_line = "🏆 TOWER CLEARED!"
 
         grid        = render_tower(self.tower, self.current_row, self.revealed)
         payout      = min(self.current_winnings, MAX_PAYOUT)
-        description = (
-            f"{grid}\n\n"
-            f"Bet: **{format_amount(self.bet)}** 💎\n"
-            f"Multiplier: **{self.current_mult:.2f}x**\n"
-            f"Potential Winnings: **{format_amount(payout)}** 💎\n"
+        profit      = payout - self.bet
+        profit_str  = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
+
+        stats = (
+            f"```\n"
+            f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+            f"  📊 Multiplier   {f'{self.current_mult:.2f}x':>12}\n"
+            f"  ✨ Profit       {profit_str:>12} 💎\n"
+            f"```"
         )
-        embed = discord.Embed(color=color, title=title, description=description)
-        embed.set_footer(text=f"Row {self.current_row + 1} • Easy Mode")
+
+        description = f"## {title_line}\n{grid}\n{stats}"
+        embed = discord.Embed(color=color, description=description)
+        mode_name = getattr(self, "mode_label", "Easy Mode")
+        embed.set_footer(text=f"Row {self.current_row + 1} • {mode_name}")
+        _brand_embed(embed)
         return embed
 
     async def _deduct_bet(self) -> bool:
@@ -7727,6 +7843,205 @@ def rps_card_grid(history: list) -> str:
         lines.append(f"`R{i:02}` {RPS_EMOJI[p]} **vs** {RPS_EMOJI[b]}  \u00b7  {badge}  \u00b7  `{mult:.2f}x`")
     return "\n".join(lines)
 
+class RPSView(BaseGameView):
+    def __init__(self, creator, bet: int):
+        super().__init__(timeout=60)
+        self.creator      = creator
+        self.bet          = bet
+        self.initial_bet  = bet
+        self.wins         = 0
+        self.history      = []
+        self.done         = False
+        self.bet_deducted = False
+        self._original_message = None
+
+    def game_embed(self, outcome: str = "playing") -> discord.Embed:
+        mult   = rps_cumulative_mult(self.wins)
+        payout = min(int(self.initial_bet * mult), MAX_PAYOUT)
+        profit = payout - self.initial_bet
+        grid   = rps_card_grid(self.history)
+
+        if outcome == "playing":
+            color = C_BLUE
+            desc = (
+                f"## \u270a Rock Paper Scissors\n"
+                f"\n"
+                f"\u1f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+                f"\U0001f4ca **Multiplier:** {mult:.2f}x\n"
+                f"\U0001f4b0 **Cashout:** {format_amount(payout)} \U0001f48e\n"
+                f"\U0001f504 **Streak:** {self.wins}\n"
+            )
+            if grid:
+                desc += f"\n{grid}\n"
+            desc += "\n*Pick your move — win to multiply, cash out to keep it!*"
+        elif outcome == "win":
+            color = C_WIN
+            last  = self.history[-1] if self.history else {}
+            desc = (
+                f"## \u270a Rock Paper Scissors\n"
+                f"\n"
+                f"\u2705 **You Won That Round!**\n"
+                f"*{RPS_EMOJI.get(last.get('player',''), '')} beat {RPS_EMOJI.get(last.get('bot',''), '')} — streak now **{self.wins}**!*\n"
+                f"\n"
+                f"\U0001f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+                f"\U0001f4ca **Multiplier:** {mult:.2f}x\n"
+                f"\U0001f4b0 **Cashout:** {format_amount(payout)} \U0001f48e\n\n"
+            )
+            if grid:
+                desc += f"{grid}\n"
+            desc += "\n*Keep going or cash out!*"
+        elif outcome == "tie":
+            color = C_GOLD
+            last  = self.history[-1] if self.history else {}
+            desc = (
+                f"## \u270a Rock Paper Scissors\n"
+                f"\n"
+                f"\U0001f501 **Tie! No Change.**\n"
+                f"*Both picked {RPS_EMOJI.get(last.get('player',''), '')} — streak stays at **{self.wins}**.*\n"
+                f"\n"
+                f"\U0001f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+                f"\U0001f4ca **Multiplier:** {mult:.2f}x\n"
+                f"\U0001f4b0 **Cashout:** {format_amount(payout)} \U0001f48e\n\n"
+            )
+            if grid:
+                desc += f"{grid}\n"
+        elif outcome == "loss":
+            color = C_LOSS
+            last  = self.history[-1] if self.history else {}
+            desc = (
+                f"## \u270a Rock Paper Scissors Results\n"
+                f"\n"
+                f"\u274c **You Lost!**\n"
+                f"*{RPS_EMOJI.get(last.get('bot',''), '')} beat {RPS_EMOJI.get(last.get('player',''), '')}.*\n"
+                f"\n"
+                f"\U0001f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+                f"\U0001f4c9 **Net Loss:** -{format_amount(self.initial_bet)} \U0001f48e\n\n"
+            )
+            if grid:
+                desc += f"{grid}\n"
+        elif outcome == "cashout":
+            color = C_WIN
+            desc = (
+                f"## \u270a Rock Paper Scissors Results\n"
+                f"\n"
+                f"\u2705 **Cashed Out!**\n"
+                f"*Locked in **{self.wins}** consecutive win{'s' if self.wins != 1 else ''} at **{mult:.2f}x**.*\n"
+                f"\n"
+                f"\U0001f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+                f"\U0001f4b5 **Net Win:** +{format_amount(profit)} \U0001f48e\n\n"
+            )
+            if grid:
+                desc += f"{grid}\n"
+        else:
+            color = C_BLUE
+            desc  = f"## \u270a Rock Paper Scissors\n\n\U0001f4b5 **Wager:** {format_amount(self.initial_bet)} \U0001f48e\n"
+
+        embed = discord.Embed(description=desc, color=color)
+        if self.history:
+            last = self.history[-1]
+            embed.add_field(name="\U0001f464 You",  value=f"{RPS_EMOJI.get(last.get('player',''), '?')} {RPS_LABEL.get(last.get('player',''), '?')}", inline=True)
+            embed.add_field(name="\U0001f916 Bot",  value=f"{RPS_EMOJI.get(last.get('bot',''), '?')} {RPS_LABEL.get(last.get('bot',''), '?')}", inline=True)
+            embed.add_field(name="\U0001f4ca Mult", value=f"{mult:.2f}x", inline=True)
+        embed.set_footer(text=f"\u270a RPS \u2022 {'Game Over' if outcome in ('loss', 'cashout') else 'Pick your move!'}")
+        _brand_embed(embed)
+        return embed
+
+    @discord.ui.button(label="Rock",     style=discord.ButtonStyle.secondary, emoji="\u270a", row=0)
+    async def rock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._play_round(interaction, "rock")
+
+    @discord.ui.button(label="Paper",    style=discord.ButtonStyle.secondary, emoji="\u270b", row=0)
+    async def paper_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._play_round(interaction, "paper")
+
+    @discord.ui.button(label="Scissors", style=discord.ButtonStyle.secondary, emoji="\u270c", row=0)
+    async def scissors_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._play_round(interaction, "scissors")
+
+    @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.success, emoji="\U0001f4b0", row=1)
+    async def cashout_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._owner_check(interaction):
+            return
+        if self.done:
+            await interaction.response.defer()
+            return
+        if self.wins == 0:
+            await interaction.response.send_message("\u274c Win at least one round before cashing out!", ephemeral=True)
+            return
+        self.done = True
+        self.stop()
+        _end_game_session(self.creator.id)
+        mult   = rps_cumulative_mult(self.wins)
+        payout = min(int(self.initial_bet * mult), MAX_PAYOUT)
+        async with get_user_lock(self.creator.id):
+            conn = await get_conn()
+            try:
+                payout = await apply_win_payout(conn, self.creator.id, payout, self.initial_bet, "rps")
+                log_e = discord.Embed(title="\u270a RPS Cashout", color=C_WIN)
+                log_e.add_field(name="Player", value=self.creator.mention)
+                log_e.add_field(name="Bet",    value=format_amount(self.initial_bet))
+                log_e.add_field(name="Payout", value=format_amount(payout))
+                log_e.add_field(name="Streak", value=str(self.wins))
+                await _log_game(log_e)
+            finally:
+                await release_conn(conn)
+        embed = self.game_embed("cashout")
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def _play_round(self, interaction: discord.Interaction, player_pick: str):
+        if not await self._owner_check(interaction):
+            return
+        if self.done:
+            await interaction.response.defer()
+            return
+        bot_pick = random.choice(["rock", "paper", "scissors"])
+        result   = rps_outcome(player_pick, bot_pick)
+        if result == "win":
+            self.wins += 1
+        mult = rps_cumulative_mult(self.wins)
+        self.history.append({"player": player_pick, "bot": bot_pick, "result": result, "mult": mult})
+        if result == "loss":
+            self.done = True
+            self.stop()
+            _end_game_session(self.creator.id)
+            async with get_user_lock(self.creator.id):
+                conn = await get_conn()
+                try:
+                    log_e = discord.Embed(title="\u270a RPS Loss", color=C_LOSS)
+                    log_e.add_field(name="Player", value=self.creator.mention)
+                    log_e.add_field(name="Bet",    value=format_amount(self.initial_bet))
+                    log_e.add_field(name="Streak", value=str(self.wins))
+                    await _log_game(log_e)
+                finally:
+                    await release_conn(conn)
+            embed = self.game_embed("loss")
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            embed = self.game_embed(result)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.done = True
+        _end_game_session(self.creator.id)
+        if self.wins > 0:
+            mult   = rps_cumulative_mult(self.wins)
+            payout = min(int(self.initial_bet * mult), MAX_PAYOUT)
+            async with get_user_lock(self.creator.id):
+                conn = await get_conn()
+                try:
+                    await apply_win_payout(conn, self.creator.id, payout, self.initial_bet, "rps")
+                finally:
+                    await release_conn(conn)
+        try:
+            if self._original_message:
+                embed = self.game_embed("cashout" if self.wins > 0 else "loss")
+                await self._original_message.edit(embed=embed, view=None)
+        except Exception:
+            pass
+
+
 async def cmd_rps(interaction: discord.Interaction, bet: str):
     wait = check_cooldown("rps", interaction.user.id)
     if wait > 0:
@@ -7988,34 +8303,48 @@ class MinesView(BaseGameView):
 
         if outcome == "loss":
             desc = (
-                f"💸 **Lost:** {format_amount(self.bet)} 💎\n"
-                f"💎 **Found:** {self.gems_found}\n"
-                f"💣 **Mines:** {self.mines}"
+                f"## 💥 BOOM — You Hit a Bomb!\n"
+                f"```\n"
+                f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                f"  📊 Multiplier   {'1.00x':>12}\n"
+                f"  💸 Loss         {format_amount(self.bet):>12} 💎\n"
+                f"  💎 Gems Found   {f'{self.gems_found}/{gems_total}':>12}\n"
+                f"```"
             )
-            embed = discord.Embed(title="💥 You Hit a Bomb!", description=desc, color=color)
+            embed = discord.Embed(description=desc, color=color)
+            embed.set_footer(text=f"💣 {self.mines} Bombs • Game Ended")
         elif outcome in ("win", "cleared"):
-            title = "💰 Cashed Out!" if outcome == "win" else "🏆 Board Cleared!"
+            title_line = "🏆 BOARD CLEARED!" if outcome == "cleared" else "🎉 VICTORY!"
             desc = (
-                f"📊 **Multiplier:** {self.current_mult:.2f}x\n"
-                f"💸 **Won:** {format_amount(payout)} 💎\n"
-                f"✨ **Profit:** {profit_str} 💎\n"
-                f"💎 **Gems Found:** {self.gems_found}/{gems_total}"
+                f"## {title_line}\n"
+                f"```\n"
+                f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                f"  📊 Multiplier   {f'{self.current_mult:.2f}x':>12}\n"
+                f"  ✨ Profit       {profit_str:>12} 💎\n"
+                f"  💎 Gems Found   {f'{self.gems_found}/{gems_total}':>12}\n"
+                f"```"
             )
-            embed = discord.Embed(title=title, description=desc, color=color)
+            embed = discord.Embed(description=desc, color=color)
+            embed.set_footer(text=f"💣 {self.mines} Bombs • Game Ended")
         else:
-            next_mult = mines_calc_mult(self.mines, self.gems_found + 1)
-            safe_left = gems_total - self.gems_found
-            unrevealed = MINES_GRID_SIZE - self.gems_found
-            chance = round((safe_left / unrevealed) * 100, 1) if unrevealed > 0 else 0.0
-            cashout_tip = "\n💡 *Click any 💎 tile to cash out*" if self.gems_found > 0 else ""
+            next_mult   = mines_calc_mult(self.mines, self.gems_found + 1)
+            safe_left   = gems_total - self.gems_found
+            unrevealed  = MINES_GRID_SIZE - self.gems_found
+            chance      = round((safe_left / unrevealed) * 100, 1) if unrevealed > 0 else 0.0
+            next_val    = format_amount(int(self.bet * next_mult))
             desc = (
-                f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
-                f"📊 **Multiplier:** {self.current_mult:.2f}x\n"
-                f"💵 **Payout:** {format_amount(payout)} 💎\n"
-                f"🎯 **Next:** {format_amount(int(self.bet * next_mult))} ({chance}%)\n"
-                f"\n💣 **{self.mines} Bombs**{cashout_tip}"
+                f"## 💎 MINES\n"
+                f"```\n"
+                f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                f"  📊 Multiplier   {f'{self.current_mult:.2f}x':>12}\n"
+                f"  ✨ Profit       {profit_str:>12} 💎\n"
+                f"  💎 Gems Found   {f'{self.gems_found}/{gems_total}':>12}\n"
+                f"```\n"
+                f"💵 **Next Gem** • {next_val} 💎 ({chance}% safe)\n"
             )
-            embed = discord.Embed(title="💎 MINES", description=desc, color=color)
+            embed = discord.Embed(description=desc, color=color)
+            tip = "Cash out by clicking a revealed 💎" if self.gems_found > 0 else "Click a tile to begin!"
+            embed.set_footer(text=f"💣 {self.mines} Bombs • {tip}")
 
         _brand_embed(embed)
         return embed
@@ -8261,11 +8590,11 @@ async def cmd_mines(interaction: discord.Interaction, bet: str, mines: int):
     await interaction.response.send_message(embed=view.game_embed(), view=view)
     view._original_message = await interaction.original_response()
 
-
+-e 
 # ================================================================
 #  >>> END OF PART 1 — paste main_part2.py directly below here <<<
 # ================================================================
-# ================================================================
+-e # ================================================================
 #  >>> START OF PART 2 — paste directly below end of main_part1.py <<<
 # ================================================================
 
@@ -8282,15 +8611,15 @@ KENO_DRAWN     = 10   # how many tiles the house draws
 KENO_PAYOUTS = {
     # Buffed payouts — better rewards while keeping house edge
     # Format: spots_picked: {hits: multiplier}
-    1:  {1: 3.5},                                           # 1/1 = 3.5x
-    2:  {1: 0.8,  2: 7.0},                                  # 1/2 = 0.8x, 2/2 = 7x
-    3:  {2: 1.2,  3: 15.0},                                 # 2/3 = 1.2x, 3/3 = 15x
-    4:  {2: 0.8,  3: 3.0,  4: 30.0},                        # 2/4 = 0.8x, 3/4 = 3x, 4/4 = 30x
-    5:  {2: 0.5,  3: 1.2,  4: 5.0,  5: 50.0},               # 3/5 = 1.2x, 4/5 = 5x, 5/5 = 50x
-    6:  {3: 0.8,  4: 2.5,  5: 15.0,  6: 100.0},             # 4/6 = 2.5x, 5/6 = 15x, 6/6 = 100x
-    7:  {3: 0.5,  4: 1.2,  5: 5.0,  6: 30.0,  7: 150.0},   # 5/7 = 5x, 6/7 = 30x, 7/7 = 150x
-    8:  {4: 0.8,  5: 2.5,  6: 10.0, 7: 60.0,  8: 300.0},   # 6/8 = 10x, 7/8 = 60x, 8/8 = 300x
-    9:  {4: 0.5,  5: 1.2,  6: 5.0,  7: 30.0,  8: 200.0, 9: 750.0},   # 7/9 = 30x, 8/9 = 200x, 9/9 = 750x
+    1:  {1: 5.0},                                                        # 1/1 = 5x  (buffed from 3.5x)
+    2:  {1: 1.5,  2: 7.0},                                               # 1/2 = 1.5x (buffed from 0.8x), 2/2 = 7x
+    3:  {1: 0.5,  2: 1.2,  3: 15.0},                                     # 1/3 = 0.5x (new), 2/3 = 1.2x, 3/3 = 15x
+    4:  {1: 0.3,  2: 0.8,  3: 3.0,  4: 30.0},                           # 1/4 = 0.3x (new), 2/4 = 0.8x, 3/4 = 3x, 4/4 = 30x
+    5:  {2: 0.5,  3: 1.2,  4: 5.0,  5: 50.0},                           # 3/5 = 1.2x, 4/5 = 5x, 5/5 = 50x
+    6:  {3: 0.8,  4: 2.5,  5: 15.0,  6: 100.0},                         # 4/6 = 2.5x, 5/6 = 15x, 6/6 = 100x
+    7:  {3: 0.5,  4: 1.2,  5: 5.0,  6: 30.0,  7: 150.0},               # 5/7 = 5x, 6/7 = 30x, 7/7 = 150x
+    8:  {4: 0.8,  5: 2.5,  6: 10.0, 7: 60.0,  8: 300.0},               # 6/8 = 10x, 7/8 = 60x, 8/8 = 300x
+    9:  {4: 0.5,  5: 1.2,  6: 5.0,  7: 30.0,  8: 200.0, 9: 750.0},     # 7/9 = 30x, 8/9 = 200x, 9/9 = 750x
     10: {4: 0.3,  5: 0.8,  6: 2.5,  7: 15.0,  8: 100.0, 9: 400.0, 10: 1500.0},  # Max 1500x
 }
 
@@ -8528,34 +8857,49 @@ class KenoView(BaseGameView):
         selected_left = self.spots - len(self.selected)
 
         if self.done and hits is not None:
-            color = C_WIN if won else C_LOSS
-            title = "🎰 KENO — " + ("WIN! 🎉" if won else "Better luck next time")
+            color  = C_WIN if won else C_LOSS
             profit = payout - self.bet
             profit_str = f"+{format_amount(profit)}" if profit >= 0 else f"-{format_amount(abs(profit))}"
+            title_line = "🎉 VICTORY!" if won else "❌ Better Luck Next Time"
+            picks_str  = "  ".join(str(n) for n in sorted(self.selected))
+            drawn_str  = "  ".join(str(n) for n in self.drawn)
             desc = (
-                f"🎯 **Your picks:** {' '.join(str(n) for n in sorted(self.selected))}\n"
-                f"🎲 **Drawn:**      {' '.join(str(n) for n in self.drawn)}\n\n"
-                f"✅ **Hits:** {hits}/{self.spots}\n"
-                f"💸 **Won:** {format_amount(payout)} 💎   •   ✨ **Profit:** {profit_str} 💎"
+                f"## 🎰 KENO — {title_line}\n"
+                f"```\n"
+                f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                f"  📊 Multiplier   {f'{multiplier:.2f}x' if multiplier else '0.00x':>12}\n"
+                f"  ✨ Profit       {profit_str:>12} 💎\n"
+                f"  🎯 Hits         {f'{hits}/{self.spots}':>12}\n"
+                f"```\n"
+                f"**Your Picks:** {picks_str}\n"
+                f"**Drawn:**  {drawn_str}"
             )
         else:
             color = C_BLUE
-            title = "🎰 KENO"
             if selected_left > 0:
                 desc = (
-                    f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
-                    f"🎯 **Pick {self.spots} numbers** — {selected_left} remaining\n"
-                    f"✅ **Selected:** {', '.join(str(n) for n in sorted(self.selected)) or 'none'}\n\n"
-                    f"*{KENO_DRAWN} numbers will be drawn. Match to win!*"
+                    f"## 🎰 KENO\n"
+                    f"```\n"
+                    f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                    f"  🎯 Pick         {f'{self.spots} numbers':>12}\n"
+                    f"  ⏳ Remaining    {f'{selected_left} left':>12}\n"
+                    f"```\n"
+                    f"**Selected:** {', '.join(str(n) for n in sorted(self.selected)) or 'none'}\n"
+                    f"*{KENO_DRAWN} numbers will be drawn — match to win!*"
                 )
             else:
                 desc = (
-                    f"💰 **Bet:** {format_amount(self.bet)} 💎\n"
-                    f"🎯 **All {self.spots} picked!** Drawing...\n"
-                    f"✅ **Selected:** {', '.join(str(n) for n in sorted(self.selected))}"
+                    f"## 🎰 KENO\n"
+                    f"```\n"
+                    f"  💰 Bet          {format_amount(self.bet):>12} 💎\n"
+                    f"  🎯 All Picked   {f'{self.spots}/{self.spots}':>12}\n"
+                    f"```\n"
+                    f"**Selected:** {', '.join(str(n) for n in sorted(self.selected))}\n"
+                    f"*Drawing now...*"
                 )
 
-        embed = discord.Embed(title=title, description=desc, color=color)
+        embed = discord.Embed(description=desc, color=color)
+        embed.set_footer(text=f"🎰 Keno • {KENO_DRAWN} numbers drawn from {KENO_TILES}")
         _brand_embed(embed)
         return embed
 
@@ -8781,16 +9125,6 @@ class ScratchView(BaseGameView):
         won, symbol, mult = scratch_check_win(self.tiles)
         revealed_count = len(self.revealed)
 
-        if outcome == "playing":
-            color = C_BLUE
-            title = "🎫  SCRATCH"
-        elif outcome == "win":
-            color = C_WIN
-            title = "🎫  SCRATCH — WINNER"
-        else:
-            color = C_LOSS
-            title = "🎫  SCRATCH — NO MATCH"
-
         grid_rows = []
         for r in range(3):
             row_str = ""
@@ -8798,63 +9132,52 @@ class ScratchView(BaseGameView):
                 idx = r * 3 + c
                 row_str += (self.tiles[idx] + " ") if idx in self.revealed else "🎟️ "
             grid_rows.append(row_str.strip())
-        grid_str = "\
-".join(grid_rows)
+        grid_str = "\n".join(grid_rows)
 
         if outcome == "playing":
-            payout = min(int(self.bet * mult), MAX_PAYOUT) if won and revealed_count == 9 else 0
+            color = C_BLUE
             desc = (
-                f"{grid_str}\
-\
-"
-                f"┌─────────────────────────┐\
-"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-                f"│ 🎟️ **Scratched** • {revealed_count}/9\
-"
-                f"└─────────────────────────┘\
-"
-                f"💡 *Click tiles or use Reveal All*"
+                f"## 🎫 Scratch Card\n"
+                f"\n"
+                f"{grid_str}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"🎟️ **Scratched:** {revealed_count}/9\n"
+                f"*Click tiles or use Reveal All*\n"
             )
         elif outcome == "win":
+            color = C_WIN
             payout = min(int(self.bet * mult), MAX_PAYOUT)
             profit = payout - self.bet
             desc = (
-                f"{grid_str}\
-\
-"
-                f"┌─────────────────────────┐\
-"
-                f"│ 🏆 **Match!** {symbol} x3\
-"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-                f"│ 📊 **Multiplier** • {mult}x\
-"
-                f"│ 💵 **Payout** • {format_amount(payout)} 💎\
-"
-                f"│ ✨ **Profit** • +{format_amount(profit)} 💎\
-"
-                f"└─────────────────────────┘"
+                f"## 🎫 Scratch Card Results\n"
+                f"\n"
+                f"✅ **Winner!**\n"
+                f"*Matched {symbol} × 3 — **{mult}×** payout!*\n"
+                f"\n"
+                f"{grid_str}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"💵 **Net Win:** +{format_amount(profit)} 💎\n"
             )
         else:
+            color = C_LOSS
             desc = (
-                f"{grid_str}\
-\
-"
-                f"┌─────────────────────────┐\
-"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-                f"│ ❌ **No matching symbols**\
-"
-                f"└─────────────────────────┘"
+                f"## 🎫 Scratch Card Results\n"
+                f"\n"
+                f"❌ **No Match!**\n"
+                f"*No three matching symbols.*\n"
+                f"\n"
+                f"{grid_str}\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"📉 **Net Loss:** -{format_amount(self.bet)} 💎\n"
             )
 
-        embed = discord.Embed(title=title, description=desc, color=color)
-        embed.set_footer(text=f"🎟️ Scratch Card • Match 3 to win!")
+        embed = discord.Embed(description=desc, color=color)
+        embed.set_footer(text="🎟️ Scratch Card • Match 3 to win!")
         return embed
+
 
     async def _deduct_bet(self) -> bool:
         if self.bet_deducted:
@@ -9437,23 +9760,10 @@ class BalloonView(BaseGameView):
         self.cashout_btn.disabled = self.done or self.pumps == 0
 
     def game_embed(self, outcome: str = "playing", pumping: bool = False) -> discord.Embed:
-        mult   = balloon_mult(self.pumps)
-        payout = min(int(self.bet * mult), MAX_PAYOUT)
-        profit = payout - self.bet
+        mult     = balloon_mult(self.pumps)
+        payout   = min(int(self.bet * mult), MAX_PAYOUT)
+        profit   = payout - self.bet
         next_pop = balloon_pop_chance(self.pumps + 1) * 100
-
-        if outcome == "playing":
-            color = C_BLUE
-            title = "🎈  PUMP THE BALLOON"
-        elif outcome == "pumping":
-            color = C_GOLD
-            title = "🎈 Pumping..."
-        elif outcome == "win":
-            color = C_WIN
-            title = "💰 Cashed Out!"
-        else:
-            color = C_LOSS
-            title = "💥  POP — BALLOON BURST"
 
         balloon_art = balloon_render(
             self.pumps,
@@ -9461,60 +9771,47 @@ class BalloonView(BaseGameView):
             pumping=pumping
         )
 
-        if outcome in ("win", "loss"):
-            stats = (
-                f"┌─────────────────────────┐\
-"
-                f"│ 🎈 **Pumps** • {self.pumps}\
-"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-                f"│ 📊 **Multiplier** • {mult:.2f}x\
-"
+        if outcome == "win":
+            color = C_WIN
+            desc = (
+                f"## 🎈 Balloon Results\n"
+                f"\n"
+                f"✅ **Cashed Out!**\n"
+                f"*You locked in {self.pumps} pump{'s' if self.pumps != 1 else ''} at **{mult:.2f}x**.*\n"
+                f"\n"
+                f"```\n{balloon_art}\n```\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"💵 **Net Win:** +{format_amount(profit)} 💎\n"
             )
-            if outcome == "win":
-                stats += (
-                    f"│ 💵 **Payout** • {format_amount(payout)} 💎\
-"
-                    f"│ ✨ **Profit** • +{format_amount(profit)} 💎\
-"
-                )
-            else:
-                stats += f"│ ❌ **Lost** • {format_amount(self.bet)} 💎\
-"
-            stats += "└─────────────────────────┘"
+        elif outcome == "loss":
+            color = C_LOSS
+            desc = (
+                f"## 🎈 Balloon Results\n"
+                f"\n"
+                f"💥 **Pop! Balloon Burst!**\n"
+                f"*Made it {self.pumps} pump{'s' if self.pumps != 1 else ''} before popping.*\n"
+                f"\n"
+                f"```\n{balloon_art}\n```\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"📉 **Net Loss:** -{format_amount(self.bet)} 💎\n"
+            )
         else:
-            stats = (
-                f"┌─────────────────────────┐\
-"
-                f"│ 🎈 **Pumps** • {self.pumps}\
-"
-                f"│ 💰 **Bet** • {format_amount(self.bet)} 💎\
-"
-                f"│ 📊 **Multiplier** • {mult:.2f}x\
-"
-                f"│ 💵 **Payout** • {format_amount(payout)} 💎\
-"
-                f"│ 💀 **Next pop risk** • {next_pop:.0f}%\
-"
-                f"└─────────────────────────┘"
+            color = C_GOLD if pumping else C_BLUE
+            tip = "*Pump at least once before cashing out!*" if self.pumps == 0 else "*Cash out to lock in your profit!*"
+            desc = (
+                f"## 🎈 Pump the Balloon\n"
+                f"\n"
+                f"```\n{balloon_art}\n```\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"📊 **Multiplier:** {mult:.2f}x\n"
+                f"💵 **Payout:** {format_amount(payout)} 💎\n"
+                f"💀 **Next pop risk:** {next_pop:.0f}%\n"
+                f"\n"
+                f"{tip}\n"
             )
-            if self.pumps == 0:
-                stats += "\
-💡 *Pump at least once before cashing out!*"
-            else:
-                stats += "\
-💡 *Click 💎 Cashout to lock in your profit!*"
 
-        embed = discord.Embed(
-            title=title,
-            description=f"```\
-{balloon_art}\
-```\
-{stats}",
-            color=color
-        )
-        embed.set_footer(text=f"🎈 Balloon Game • {'Game Over' if outcome in ('win','loss') else f'Pump #{self.pumps+1} next'}")
+        embed = discord.Embed(description=desc, color=color)
+        embed.set_footer(text=f"🎈 Balloon • {'Game Over' if outcome in ('win', 'loss') else f'Pump #{self.pumps + 1} next'}")
         return embed
 
     async def _deduct_bet(self) -> bool:
@@ -9754,8 +10051,10 @@ class SlotsView(BaseGameView):
         e = discord.Embed(
             color=C_GOLD,
             description=(
-                f"## 🎰  SLOT MACHINE\n"
-                f"```\n  wager   {format_amount(self.bet):>14}\n```\n"
+                f"## 🎰 Slot Machine\n"
+                f"\n"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"\n"
                 f"{_slots_paytable_str()}\n"
             )
         )
@@ -9829,24 +10128,29 @@ class SlotsView(BaseGameView):
             await asyncio.sleep(0.8)
 
         if won:
-            color  = C_WIN
-            header = f"🎉  {result_label}"
-            net_str = f"+{format_amount(payout - self.bet)} 💎"
+            color    = C_WIN
+            net_str  = f"+{format_amount(payout - self.bet)} 💎"
+            outcome  = "✅ **You Won!**"
+            explain  = f"*{result_label} — **{mult}×** payout!*"
+            net_label = "💵 Net Win:"
         else:
-            color  = 0xE74C3C
-            header = f"💔  {result_label}"
-            net_str = f"-{format_amount(self.bet)} 💎"
+            color    = C_LOSS
+            net_str  = f"-{format_amount(self.bet)} 💎"
+            outcome  = "❌ **No Match!**"
+            explain  = f"*{result_label}*"
+            net_label = "📉 Net Loss:"
 
-        _slot_tag = "+" if won else "-"
         result_embed = discord.Embed(
             color=color,
             description=(
-                f"## 🎰  SLOTS  —  {result_label}\n"
+                f"## 🎰 Slot Machine Results\n"
+                f"\n"
+                f"{outcome}\n"
+                f"{explain}\n"
+                f"\n"
                 f"```\n  {_slots_reels_str(reels)}  \n```\n"
-                f"```diff\n"
-                f"{_slot_tag} {net_str}\n"
-                f"# {mult}×  ·  wager {format_amount(self.bet)} 💎\n"
-                f"```"
+                f"💵 **Wager:** {format_amount(self.bet)} 💎\n"
+                f"{net_label} {net_str}\n"
             )
         )
         _brand_embed(result_embed)
@@ -10014,85 +10318,81 @@ def cd_game_embed(bet: int, chosen: str = None, slots: list = None,
                   outcome: str = None, spin_frame: int = 0) -> discord.Embed:
 
     if outcome is None:
+        # Pick screen — no animation
         color = C_BLUE
-        title = "⚄  COLOR DICE"
-        dice_display = "⚀  ⚁  ⚂  ⚃  ⚄  ⚅"
-        stats = (
-            f"┌─────────────────────────┐\
-"
-            f"│ 💰 **Bet** • {format_amount(bet)} 💎\
-"
-            f"│ 🏆 **Win** • 2x if color lands once\
-"
-            f"│ 🤝 **Tie** • Refund if it lands 2+\
-"
-            f"│ ❌ **Lose** • If color doesn't appear\
-"
-            f"└─────────────────────────┘\
-"
-            f"👇 *Pick your color below!*"
+        desc = (
+            f"## ⚄ Color Dice\n"
+            f"\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"\n"
+            f"🏆 **Win** — 2× if your color lands once\n"
+            f"🔁 **Tie** — refund if it lands 2+ times\n"
+            f"❌ **Lose** — if your color doesn't appear\n"
+            f"\n"
+            f"*Pick your color below!*\n"
         )
+        embed = discord.Embed(description=desc, color=color)
+
     elif outcome == "spinning":
         color = C_GOLD
-        title = "⚄  ROLLING..."
-        dice_display = cd_render_spinning(spin_frame)
         chosen_emoji = next(e for e, n in CD_COLORS if n == chosen)
-        stats = (
-            f"┌─────────────────────────┐\
-"
-            f"│ 🎯 **Your Pick** • {chosen_emoji} {chosen}\
-"
-            f"│ 💰 **Bet** • {format_amount(bet)} 💎\
-"
-            f"│ ⏳ **Rolling...**\
-"
-            f"└─────────────────────────┘"
+        dice_display = cd_render_spinning(spin_frame)
+        desc = (
+            f"## ⚄ Color Dice\n"
+            f"\n"
+            f"🎲 **Rolling the dice...**\n"
+            f"\n"
+            f"```\n{dice_display}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"🎯 **Your Pick:** {chosen_emoji} {chosen}\n"
         )
+        embed = discord.Embed(description=desc, color=color)
+
     else:
-        count = cd_count(slots, chosen)
+        count        = cd_count(slots, chosen)
         chosen_emoji = next(e for e, n in CD_COLORS if n == chosen)
         dice_display = cd_render_result(slots, chosen)
-        payout = min(int(bet * 2), MAX_PAYOUT) if outcome == "win" else (bet if outcome == "tie" else 0)
-        net = payout - bet
+        payout       = min(int(bet * 2), MAX_PAYOUT) if outcome == "win" else (bet if outcome == "tie" else 0)
+        net          = payout - bet
 
         if outcome == "win":
-            color = C_WIN
-            title = "⚄  ✦ YOUR COLOR WINS"
-            result_line = f"│ ✨ **Profit** • +{format_amount(net)} 💎\
-"
+            color        = C_WIN
+            outcome_icon = "✅"
+            title_txt    = "You Won!"
+            explain      = f"*{chosen_emoji} {chosen} landed {count}× — **2×** payout!*"
+            net_label    = "💵 Net Win:"
+            net_str      = f"+{format_amount(net)} 💎"
         elif outcome == "tie":
-            color = C_GOLD
-            title = "⚄  ↩ PUSH — REFUNDED"
-            result_line = f"│ 🔄 **Refunded** • {format_amount(bet)} 💎\
-"
+            color        = C_GOLD
+            outcome_icon = "🔁"
+            title_txt    = "Push — Refunded!"
+            explain      = f"*{chosen_emoji} {chosen} landed {count}× — bet returned.*"
+            net_label    = "💵 Net:"
+            net_str      = "±0 💎"
         else:
-            color = C_LOSS
-            title = "💀 NOT THIS TIME!"
-            result_line = f"│ ❌ **Lost** • {format_amount(bet)} 💎\
-"
+            color        = C_LOSS
+            outcome_icon = "❌"
+            title_txt    = "You Lost!"
+            explain      = f"*{chosen_emoji} {chosen} didn't appear.*"
+            net_label    = "📉 Net Loss:"
+            net_str      = f"-{format_amount(bet)} 💎"
 
-        stats = (
-            f"┌─────────────────────────┐\
-"
-            f"│ 🎯 **Your Pick** • {chosen_emoji} {chosen}\
-"
-            f"│ 🎲 **Appearances** • {count}x\
-"
-            f"│ 💰 **Bet** • {format_amount(bet)} 💎\
-"
-            f"{result_line}"
-            f"└─────────────────────────┘"
+        desc = (
+            f"## ⚄ Color Dice Results\n"
+            f"\n"
+            f"{outcome_icon} **{title_txt}**\n"
+            f"{explain}\n"
+            f"\n"
+            f"```\n{dice_display}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"{net_label} {net_str}\n"
         )
+        embed = discord.Embed(description=desc, color=color)
+        embed.add_field(name="🎯 Your Pick",    value=f"{chosen_emoji} {chosen}", inline=True)
+        embed.add_field(name="🎲 Appearances", value=f"{count}×",                inline=True)
 
-    embed = discord.Embed(
-        title=title,
-        description=f"```\
-{dice_display}\
-```\
-{stats}",
-        color=color
-    )
     embed.set_footer(text="🎲 Color Dice • Land once = win, twice = tie, none = lose")
+    _brand_embed(embed)
     return embed
 
 class CDColorButton(discord.ui.Button):
@@ -10341,52 +10641,64 @@ def upgrader_wheel_render(display_chance: float, arrow_pos: float, outcome: str 
 
 def upgrader_embed(bet: int, mult: float, outcome: str = "pending", arrow_pos: float = 0.0) -> discord.Embed:
     display_chance = upgrader_display_chance(mult)
-    payout = min(int(bet * mult), MAX_PAYOUT)
-    profit = payout - bet
+    payout         = min(int(bet * mult), MAX_PAYOUT)
+    profit         = payout - bet
+    wheel          = upgrader_wheel_render(display_chance, arrow_pos, outcome=outcome)
 
     if outcome == "pending":
         color = C_BLUE
-        title = "⬆️  UPGRADER"
+        desc = (
+            f"## ⬆️ Upgrader\n"
+            f"\n"
+            f"```\n{wheel}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"📊 **Multiplier:** {mult:.2f}x\n"
+            f"🎯 **Win Chance:** {display_chance*100:.2f}%\n"
+            f"🏆 **Win Payout:** {format_amount(payout)} 💎\n"
+            f"\n"
+            f"*Click Upgrade to spin!*\n"
+        )
     elif outcome == "spinning":
         color = C_GOLD
-        title = "⬆️  UPGRADER — SPINNING..."
+        desc = (
+            f"## ⬆️ Upgrader\n"
+            f"\n"
+            f"🌀 **Spinning...**\n"
+            f"\n"
+            f"```\n{wheel}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"📊 **Multiplier:** {mult:.2f}x\n"
+            f"🎯 **Win Chance:** {display_chance*100:.2f}%\n"
+        )
     elif outcome == "win":
         color = C_WIN
-        title = "⬆️ UPGRADE SUCCESSFUL! 🎉"
+        desc = (
+            f"## ⬆️ Upgrader Results\n"
+            f"\n"
+            f"✅ **Upgrade Successful!**\n"
+            f"*The arrow landed in the win zone at **{mult:.2f}x**!*\n"
+            f"\n"
+            f"```\n{wheel}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"💵 **Net Win:** +{format_amount(profit)} 💎\n"
+        )
     else:
         color = C_LOSS
-        title = "⬆️ UPGRADE FAILED! 💀"
+        desc = (
+            f"## ⬆️ Upgrader Results\n"
+            f"\n"
+            f"❌ **Upgrade Failed!**\n"
+            f"*The arrow missed the win zone.*\n"
+            f"\n"
+            f"```\n{wheel}\n```\n"
+            f"💵 **Wager:** {format_amount(bet)} 💎\n"
+            f"📉 **Net Loss:** -{format_amount(bet)} 💎\n"
+        )
 
-    wheel = upgrader_wheel_render(display_chance, arrow_pos, outcome=outcome)
-
-    stats = (
-        f"┌─────────────────────────┐\
-"
-        f"│ 💰 **Bet** • {format_amount(bet)} 💎\
-"
-        f"│ 📊 **Multiplier** • {mult:.2f}x\
-"
-        f"│ 🎯 **Win Chance** • {display_chance*100:.2f}%\
-"
-        f"│ 💵 **Win Payout** • {format_amount(payout)} 💎\
-"
-    )
-    if outcome == "win":
-        stats += f"│ ✨ **Profit** • +{format_amount(profit)} 💎\
-"
-    elif outcome == "loss":
-        stats += f"│ ❌ **Lost** • {format_amount(bet)} 💎\
-"
-    stats += "└─────────────────────────┘"
-
-    embed = discord.Embed(
-        title=title,
-        description=f"```\
-{wheel}\
-```\
-{stats}",
-        color=color
-    )
+    embed = discord.Embed(description=desc, color=color)
+    if outcome in ("win", "loss"):
+        embed.add_field(name="📊 Multiplier",  value=f"{mult:.2f}x",              inline=True)
+        embed.add_field(name="🎯 Win Chance",  value=f"{display_chance*100:.2f}%", inline=True)
     _brand_embed(embed)
     return embed
 
@@ -10771,11 +11083,18 @@ async def cmd_invitestats(interaction: discord.Interaction):
     valid  = max(0, total - leaves)
     earned = total * 7_000_000
 
-    embed = discord.Embed(title="📨 Your Invite Stats", color=C_BLUE)
-    embed.add_field(name="Total Invites", value=str(total),            inline=True)
-    embed.add_field(name="Valid Invites", value=str(valid),            inline=True)
-    embed.add_field(name="Total Earned",  value=format_amount(earned), inline=True)
-    embed.set_footer(text="Use /invites for full breakdown · /claiminvites to redeem")
+    embed = discord.Embed(
+        color=C_BLUE,
+        description=(
+            f"## 📨 Your Invite Stats\n"
+            f"\n"
+            f"📬 **Total Invites:** {total}\n"
+            f"✅ **Valid Invites:** {valid}\n"
+            f"💰 **Total Earned:** {format_amount(earned)} 💎\n"
+        )
+    )
+    embed.set_footer(text="Use /invites for full breakdown  •  /claiminvites to redeem")
+    _brand_embed(embed)
     await interaction.followup.send(embed=embed)
 
 COINS_PER_DOLLAR = 10_000  # 10,000 gems = $1 (1 gem = $0.0001)
@@ -10803,9 +11122,9 @@ async def _get_stock_item(conn, item_name: str):
 
 async def _stock_embed(merged_rows, page: int = 0, page_size: int = 10) -> discord.Embed:
     """Build the public /stock embed from a pre-merged list of (name, val, qty) tuples."""
-    e = discord.Embed(color=C_GOLD, title="📦  Stock Items")
+    e = discord.Embed(color=C_GOLD, description=f"## 📦 Stock Items\n")
     if not merged_rows:
-        e.description = "*No items currently in stock.*"
+        e.description += "*No items currently in stock.*"
         _brand_embed(e)
         return e
     total  = len(merged_rows)
@@ -11021,6 +11340,138 @@ async def cmd_deposit(interaction: discord.Interaction):
         log_e.add_field(name="Channel", value=ticket_channel.mention,            inline=True)
     log_e.set_footer(text=now_ts())
     await send_finance_log(log_e)
+
+class SupportTicketView(discord.ui.View):
+    """Buttons shown inside a support ticket channel."""
+    def __init__(self, user_id: int, channel_id: int):
+        super().__init__(timeout=None)
+        self.user_id    = user_id
+        self.channel_id = channel_id
+
+    @discord.ui.button(label="\u2705 Close Ticket", style=discord.ButtonStyle.green, custom_id="support_close")
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed = any(r.name in (OWNER_ROLE_NAME, ADMIN_ROLE_NAME, STAFF_ROLE_NAME, MANAGER_ROLE_NAME)
+                      for r in getattr(interaction.user, "roles", []))
+        if not allowed and interaction.user.id != self.user_id:
+            await interaction.response.send_message("\u274c Only staff or the ticket creator can close this.", ephemeral=True)
+            return
+
+        closed_e = discord.Embed(
+            color=C_LOSS,
+            description=(
+                f"## \U0001f512 Ticket Closed\n"
+                f"\n"
+                f"*Closed by {interaction.user.mention}*\n"
+                f"*This channel will be deleted in 5 seconds.*"
+            )
+        )
+        _brand_embed(closed_e)
+        await interaction.response.send_message(embed=closed_e)
+
+        log_e = discord.Embed(color=C_LOSS, description="## \U0001f3ab Support Ticket Closed")
+        log_e.add_field(name="User",   value=f"<@{self.user_id}>",     inline=True)
+        log_e.add_field(name="Closed", value=interaction.user.mention, inline=True)
+        log_e.set_footer(text=now_ts())
+        await send_log(log_e)
+
+        await asyncio.sleep(5)
+        try:
+            ch = interaction.guild.get_channel(self.channel_id)
+            if ch:
+                await ch.delete(reason=f"Support ticket closed by {interaction.user}")
+        except Exception as e:
+            print(f"[SUPPORT] Could not delete ticket channel: {e}")
+
+
+@bot.tree.command(name="support", description="Open a support ticket — staff will assist you.")
+@app_commands.describe(reason="Brief description of your issue (optional)")
+async def cmd_support(interaction: discord.Interaction, reason: str = ""):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = bot.get_guild(GUILD_ID)
+
+    support_cat = None
+    if guild:
+        support_cat = discord.utils.get(guild.categories, name="Support")
+        if not support_cat:
+            support_cat = discord.utils.get(guild.categories, name="Tickets")
+
+    ticket_channel = None
+    if guild:
+        try:
+            staff_role   = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
+            admin_role   = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+            tmod_role    = discord.utils.get(guild.roles, name=TMOD_ROLE_NAME)
+            manager_role = discord.utils.get(guild.roles, name=MANAGER_ROLE_NAME)
+            owner_role   = discord.utils.get(guild.roles, name=OWNER_ROLE_NAME)
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me:           discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
+                interaction.user:   discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            }
+            if staff_role:   overwrites[staff_role]   = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if admin_role:   overwrites[admin_role]   = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if tmod_role:    overwrites[tmod_role]    = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if manager_role: overwrites[manager_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if owner_role:   overwrites[owner_role]   = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+            ticket_channel = await guild.create_text_channel(
+                name=f"support-{interaction.user.name}",
+                category=support_cat,
+                overwrites=overwrites,
+                reason=f"Support ticket for {interaction.user}"
+            )
+
+            reason_line = f"\n\n\U0001f4dd **Issue:** {reason}" if reason.strip() else ""
+            ticket_e = discord.Embed(
+                color=C_BLUE,
+                description=(
+                    f"## \U0001f3ab Support Ticket\n"
+                    f"\n"
+                    f"\U0001f464 **User:** {interaction.user.mention}\n"
+                    f"\U0001f194 **ID:** `{interaction.user.id}`{reason_line}\n"
+                    f"\n"
+                    f"*Staff will be with you shortly. Please describe your issue below.*\n"
+                    f"*Do not ping staff — they will see this ticket.*"
+                )
+            )
+            _brand_embed(ticket_e)
+            view = SupportTicketView(user_id=interaction.user.id, channel_id=ticket_channel.id)
+
+            ping_content = f"{interaction.user.mention}"
+            if staff_role:   ping_content += f" {staff_role.mention}"
+            elif admin_role: ping_content += f" {admin_role.mention}"
+
+            await ticket_channel.send(content=ping_content, embed=ticket_e, view=view)
+
+        except Exception as ex:
+            print(f"[SUPPORT TICKET] Could not create channel: {ex}")
+            ticket_channel = None
+
+    reply_e = discord.Embed(
+        color=C_BLUE,
+        description=(
+            f"## \U0001f3ab Support Ticket Opened\n"
+            f"\n"
+            f"\u2705 **Your ticket has been created!**\n"
+            f"{'*Go to ' + ticket_channel.mention + ' to chat with staff.*' if ticket_channel else '*A ticket has been opened — staff will contact you.*'}\n"
+            f"\n"
+            f"*Please be patient and describe your issue in the ticket channel.*"
+        )
+    )
+    _brand_embed(reply_e)
+    await interaction.followup.send(embed=reply_e, ephemeral=True)
+
+    log_e = discord.Embed(color=C_BLUE, description="## \U0001f3ab Support Ticket Opened")
+    log_e.add_field(name="User",    value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+    if ticket_channel:
+        log_e.add_field(name="Channel", value=ticket_channel.mention, inline=True)
+    if reason.strip():
+        log_e.add_field(name="Reason", value=reason[:200], inline=False)
+    log_e.set_footer(text=now_ts())
+    await send_log(log_e)
+
 
 class WithdrawSelectView(discord.ui.View):
     """Shows a dropdown of items the user can afford."""
@@ -11383,6 +11834,69 @@ class StockView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+@bot.tree.command(name="unlockwithdraw", description="[Admin] Unlock a user from the 1-ticket limit by disabling their active withdraw panel.")
+@app_commands.describe(user="The user whose active withdraw ticket you want to unlock")
+async def cmd_unlockwithdraw(interaction: discord.Interaction, user: discord.Member):
+    if not any(r.name in (ADMIN_ROLE_NAME, OWNER_ROLE_NAME, MANAGER_ROLE_NAME) for r in getattr(interaction.user, "roles", [])):
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            "SELECT id, channel_id FROM withdrawals_queue WHERE user_id=$1 AND status='pending' ORDER BY id DESC LIMIT 1",
+            str(user.id)
+        )
+        if not row:
+            await interaction.followup.send(
+                f"❌ {user.mention} has no active pending withdrawal ticket.",
+                ephemeral=True
+            )
+            return
+
+        ticket_id  = row["id"]
+        channel_id = row["channel_id"]
+
+        # Mark the ticket as cancelled in DB so they can open a new one
+        await conn.execute(
+            "UPDATE withdrawals_queue SET status='cancelled', completed_at=$1 WHERE id=$2",
+            now_ts(), ticket_id
+        )
+    finally:
+        await release_conn(conn)
+
+    # Disable the panel buttons in the ticket channel
+    disabled = False
+    if channel_id:
+        guild = bot.get_guild(GUILD_ID)
+        ch    = guild.get_channel(int(channel_id)) if guild else None
+        if ch:
+            try:
+                # The ticket message with the view is always the first bot message
+                async for msg in ch.history(limit=10, oldest_first=True):
+                    if msg.author == guild.me and msg.components:
+                        await msg.edit(view=None)
+                        disabled = True
+                        break
+            except Exception as e:
+                print(f"[UNLOCKWITHDRAW] Could not disable panel in channel {channel_id}: {e}")
+
+    panel_note = " The panel buttons have been disabled in their ticket." if disabled else " (Could not find/edit the ticket channel panel.)"
+    result_embed = discord.Embed(
+        color=C_WIN,
+        description=(
+            f"## 🔓 Withdraw Unlocked\n"
+            f"\n"
+            f"✅ **{user.mention}** can now open a new withdrawal ticket.\n"
+            f"*Ticket #{ticket_id} has been marked as cancelled.{panel_note}*\n"
+        )
+    )
+    _brand_embed(result_embed)
+    await interaction.followup.send(embed=result_embed, ephemeral=True)
+
+
 @bot.tree.command(name="stock", description="View all items in the shop available for withdrawal.")
 async def cmd_stock(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -11544,11 +12058,18 @@ async def cmd_adminbalance(interaction: discord.Interaction):
     filled    = int((used / insurance) * bar_len) if insurance > 0 else 0
     bar       = "█" * filled + "░" * (bar_len - filled)
 
-    embed = discord.Embed(title="🛡️ Your Admin Insurance Balance", color=C_GOLD)
-    embed.add_field(name="💰 Total Insurance", value=format_amount(insurance), inline=True)
-    embed.add_field(name="📤 Used",            value=format_amount(used),      inline=True)
-    embed.add_field(name="✅ Remaining",        value=format_amount(remaining), inline=True)
-    embed.add_field(name="📊 Usage",           value=f"`[{bar}]` {pct:.1f}%",  inline=False)
+    embed = discord.Embed(
+        color=C_GOLD,
+        description=(
+            f"## 🛡️ Admin Insurance Balance\n"
+            f"\n"
+            f"💰 **Total Insurance:** {format_amount(insurance)} 💎\n"
+            f"📤 **Used:** {format_amount(used)} 💎\n"
+            f"✅ **Remaining:** {format_amount(remaining)} 💎\n"
+            f"\n"
+            f"📊 `[{bar}]` {pct:.1f}%\n"
+        )
+    )
     embed.set_footer(text=now_ts())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -11695,12 +12216,18 @@ async def cmd_addcoins(interaction: discord.Interaction, user: discord.Member, a
     finally:
         await release_conn(conn)
 
-    embed = discord.Embed(title="✅ Gems Added", color=C_WIN)
-    embed.add_field(name="User",        value=user.mention,             inline=True)
-    embed.add_field(name="Added",       value=format_amount(amt),       inline=True)
-    embed.add_field(name="Old Balance", value=format_amount(old_bal),   inline=True)
-    embed.add_field(name="New Balance", value=format_amount(new_bal),   inline=True)
-    embed.add_field(name="Admin",       value=interaction.user.mention, inline=True)
+    embed = discord.Embed(
+        color=C_WIN,
+        description=(
+            f"## ✅ Gems Added\n"
+            f"\n"
+            f"💵 **Amount:** +{format_amount(amt)} 💎\n"
+            f"👤 **User:** {user.mention}\n"
+            f"💰 **New Balance:** {format_amount(new_bal)} 💎\n"
+        )
+    )
+    embed.set_footer(text=f"{interaction.user}  •  {now_ts()}")
+    _brand_embed(embed)
     if ab_row is not None:
         new_remaining = max(0, ab_row["insurance"] - ab_row["used"] - amt)
         embed.add_field(name="🛡️ Your Remaining Limit", value=format_amount(new_remaining), inline=True)
@@ -11731,12 +12258,18 @@ async def cmd_removecoins(interaction: discord.Interaction, user: discord.Member
     finally:
         await release_conn(conn)
 
-    embed = discord.Embed(title="✅ Gems Removed", color=C_LOSS)
-    embed.add_field(name="User",        value=user.mention,           inline=True)
-    embed.add_field(name="Removed",     value=format_amount(amt),     inline=True)
-    embed.add_field(name="Old Balance", value=format_amount(old_bal), inline=True)
-    embed.add_field(name="New Balance", value=format_amount(new_bal), inline=True)
-    embed.set_footer(text=now_ts())
+    embed = discord.Embed(
+        color=C_LOSS,
+        description=(
+            f"## ✅ Gems Removed\n"
+            f"\n"
+            f"💵 **Amount:** -{format_amount(amt)} 💎\n"
+            f"👤 **User:** {user.mention}\n"
+            f"💰 **New Balance:** {format_amount(new_bal)} 💎\n"
+        )
+    )
+    embed.set_footer(text=f"{interaction.user}  •  {now_ts()}")
+    _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
     await send_finance_log(embed)
 
@@ -11917,13 +12450,33 @@ async def cmd_admintip(interaction: discord.Interaction, user: discord.Member, a
     finally:
         await release_conn(conn)
 
-    embed = discord.Embed(title="💸 Admin Tip Sent", color=C_WIN)
-    embed.add_field(name="Recipient",   value=user.mention,             inline=True)
-    embed.add_field(name="Amount",      value=format_amount(amt),       inline=True)
-    embed.add_field(name="New Balance", value=format_amount(new_bal),   inline=True)
-    embed.add_field(name="Admin",       value=interaction.user.mention, inline=True)
+    embed = discord.Embed(
+        color=C_WIN,
+        description=(
+            f"## 💸 Admin Tip Sent\n"
+            f"\n"
+            f"✅ **Sent!**\n"
+            f"*{interaction.user.mention} → {user.mention}*\n"
+            f"\n"
+            f"💵 **Amount:** {format_amount(amt)} 💎\n"
+            f"💰 **Their New Balance:** {format_amount(new_bal)} 💎\n"
+        )
+    )
     embed.set_footer(text=now_ts())
+    _brand_embed(embed)
     await interaction.response.send_message(embed=embed)
+    try:
+        await user.send(embed=discord.Embed(
+            color=C_WIN,
+            description=(
+                f"## 🎁 You received a tip!\n"
+                f"\n"
+                f"💵 **Amount:** {format_amount(amt)} 💎\n"
+                f"💰 **New Balance:** {format_amount(new_bal)} 💎\n"
+            )
+        ))
+    except Exception:
+        pass
     try:
         await user.send(embed=discord.Embed(
             title="🎁 You received a tip!",
